@@ -1,0 +1,151 @@
+version: '3.8'
+
+services:
+  # PostgreSQL - Primary datastore
+  postgres:
+    image: postgres:16-alpine
+    container_name: zhejian-postgres
+    environment:
+      POSTGRES_USER: zhejian
+      POSTGRES_PASSWORD: zhejian_secret
+      POSTGRES_DB: urlshortener
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zhejian -d urlshortener"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis - Caching layer (uncomment when ready)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: zhejian-redis
+  #   command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+  # RabbitMQ - Message broker (uncomment when ready)
+  # rabbitmq:
+  #   image: rabbitmq:3.12-management-alpine
+  #   container_name: zhejian-rabbitmq
+  #   environment:
+  #     RABBITMQ_DEFAULT_USER: zhejian
+  #     RABBITMQ_DEFAULT_PASS: zhejian_secret
+  #   ports:
+  #     - "5672:5672"   # AMQP
+  #     - "15672:15672" # Management UI
+  #   volumes:
+  #     - rabbitmq_data:/var/lib/rabbitmq
+  #   healthcheck:
+  #     test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+
+  # Prometheus - Metrics collection (uncomment when ready)
+  # prometheus:
+  #   image: prom/prometheus:v2.47.0
+  #   container_name: zhejian-prometheus
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #     - '--web.enable-lifecycle'
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+  #     - prometheus_data:/prometheus
+  #   depends_on:
+  #     - gateway
+
+  # Grafana - Dashboards (uncomment when ready)
+  # grafana:
+  #   image: grafana/grafana:10.1.0
+  #   container_name: zhejian-grafana
+  #   environment:
+  #     GF_SECURITY_ADMIN_USER: admin
+  #     GF_SECURITY_ADMIN_PASSWORD: admin
+  #     GF_USERS_ALLOW_SIGN_UP: false
+  #   ports:
+  #     - "3001:3000"
+  #   volumes:
+  #     - ./observability/grafana/provisioning:/etc/grafana/provisioning
+  #     - grafana_data:/var/lib/grafana
+  #   depends_on:
+  #     - prometheus
+
+  # Jaeger - Distributed tracing (uncomment when ready)
+  # jaeger:
+  #   image: jaegertracing/all-in-one:1.50
+  #   container_name: zhejian-jaeger
+  #   environment:
+  #     COLLECTOR_OTLP_ENABLED: true
+  #   ports:
+  #     - "16686:16686" # Jaeger UI
+  #     - "4317:4317"   # OTLP gRPC
+  #     - "4318:4318"   # OTLP HTTP
+
+  # Go API Gateway (uncomment when ready)
+  # gateway:
+  #   build:
+  #     context: ./services/gateway
+  #     dockerfile: Dockerfile
+  #   container_name: zhejian-gateway
+  #   environment:
+  #     - DATABASE_URL=postgres://zhejian:zhejian_secret@postgres:5432/urlshortener?sslmode=disable
+  #     - REDIS_URL=redis://redis:6379
+  #     - RABBITMQ_URL=amqp://zhejian:zhejian_secret@rabbitmq:5672/
+  #     - RATE_LIMITER_URL=http://rate-limiter:8081
+  #     - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+  #   ports:
+  #     - "8080:8080"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     rabbitmq:
+  #       condition: service_healthy
+
+  # Rust Rate Limiter (uncomment when ready)
+  # rate-limiter:
+  #   build:
+  #     context: ./services/rate-limiter
+  #     dockerfile: Dockerfile
+  #   container_name: zhejian-rate-limiter
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379
+  #     - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+  #   ports:
+  #     - "8081:8081"
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+
+  # Toxiproxy - Chaos testing proxy (uncomment when ready)
+  # toxiproxy:
+  #   image: ghcr.io/shopify/toxiproxy:2.7.0
+  #   container_name: zhejian-toxiproxy
+  #   ports:
+  #     - "8474:8474"   # API
+  #     - "5434:5434"   # Postgres proxy
+  #     - "6380:6380"   # Redis proxy
+  #     - "5673:5673"   # RabbitMQ proxy
+
+volumes:
+  postgres_data:
+  # redis_data:
+  # rabbitmq_data:
+  # prometheus_data:
+  # grafana_data:

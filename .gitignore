@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+vendor/
+target/
+
+# Build outputs
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+postgres_data/
+redis_data/
+rabbitmq_data/
+prometheus_data/
+grafana_data/
+
+# Test coverage
+coverage/
+*.cover
+*.out
+
+# Temporary files
+tmp/
+temp/
+*.tmp
