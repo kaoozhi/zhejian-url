@@ -32,7 +32,7 @@
 - Request tracing and metrics
 
 **Key Packages:**
-- `chi` or `fiber` - HTTP router
+- `gin` - HTTP router
 - `sony/gobreaker` - Circuit breaker
 - `golang.org/x/time/rate` - Local rate limiting fallback
 - `opentelemetry-go` - Distributed tracing

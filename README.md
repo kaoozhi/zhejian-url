@@ -75,7 +75,7 @@ zhejian-url/
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| API Gateway | Go (Fiber/Chi) | Request routing, backpressure, circuit breaking |
+| API Gateway | Go (Fiber/Gin) | Request routing, backpressure, circuit breaking |
 | Rate Limiter | Rust (Actix/Axum) | Low-latency distributed rate limiting |
 | Primary DB | PostgreSQL | Authoritative URL storage |
 | Cache | Redis | Read-optimized caching |
