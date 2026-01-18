@@ -9,11 +9,12 @@ import (
 )
 
 var (
-	ErrInvalidURL   = errors.New("invalid URL format")
-	ErrURLNotFound  = errors.New("URL not found")
-	ErrURLExpired   = errors.New("URL has expired")
-	ErrCodeExists   = errors.New("custom alias already exists")
-	ErrInvalidAlias = errors.New("invalid custom alias format")
+	ErrInvalidURL          = errors.New("invalid URL format")
+	ErrURLNotFound         = errors.New("URL not found")
+	ErrURLExpired          = errors.New("URL has expired")
+	ErrCodeExists          = errors.New("custom alias already exists")
+	ErrInvalidAlias        = errors.New("invalid custom alias format")
+	ErrShortCodeGeneration = errors.New("failed to generate short URL")
 )
 
 // URLService handles business logic for URL operations

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
@@ -67,7 +68,27 @@ func (r *URLRepository) CodeExists(ctx context.Context, code string) (bool, erro
 func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 	// TODO: Implement connection pool creation
 	// - Parse connection string
+	config, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, err
+	}
 	// - Configure pool settings (max conns, timeouts, etc.)
+	// Configure pool settings
+	config.MaxConns = 10
+	config.MinConns = 2
+	config.MaxConnLifetime = time.Hour
+	config.MaxConnIdleTime = 30 * time.Minute
+
+	// Create the pool
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	// Test the connection
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	// - Return the pool
-	return nil, nil
+	return pool, nil
 }

@@ -1,28 +1,26 @@
 package main
 
-import (
-	"context"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
-	"github.com/zhejian/url-shortener/gateway/internal/api"
-	"github.com/zhejian/url-shortener/gateway/internal/repository"
-	"github.com/zhejian/url-shortener/gateway/internal/service"
-)
-
 func main() {
 	// TODO: Load configuration from environment variables or config file
 	// - Database connection string
 	// - Server port
 	// - Base URL for short links
+	// cfg, err := config.Load()
+	// if err != nil {
+	// 	log.Fatalf("Failed to load config: %v", err)
+	// }
 
-	// TODO: Initialize database connection pool
+	// log.Printf("Starting server on port %s", cfg.Server.Port)
+
+	// connectionString := cfg.Database.ConnectionString()
+	// // TODO: Initialize database connection pool
+	// ctx := context.Background()
+	// // db, err := repository.NewPostgresPool(ctx, connectionString)
 	// db, err := repository.NewPostgresPool(ctx, connectionString)
-
+	// if err := db.Ping(ctx); err == nil {
+	// 	log.Printf("db connected")
+	// 	db.Close()
+	// }
 	// TODO: Initialize repository
 	// urlRepo := repository.NewURLRepository(db)
 
@@ -52,14 +50,14 @@ func main() {
 	// - Call srv.Shutdown(ctx)
 	// - Close database connection
 
-	_ = context.Background()
-	_ = log.Println
-	_ = http.StatusOK
-	_ = os.Getenv
-	_ = signal.Notify
-	_ = syscall.SIGINT
-	_ = time.Second
-	_ = api.NewHandler
-	_ = repository.NewURLRepository
-	_ = service.NewURLService
+	// _ = context.Background()
+	// _ = log.Println
+	// _ = http.StatusOK
+	// _ = os.Getenv
+	// _ = signal.Notify
+	// _ = syscall.SIGINT
+	// _ = time.Second
+	// _ = api.NewHandler
+	// _ = repository.NewURLRepository
+	// _ = service.NewURLService
 }

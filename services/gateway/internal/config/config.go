@@ -1,6 +1,12 @@
 package config
 
-import "time"
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/joho/godotenv"
+)
 
 // Config holds all application configuration
 type Config struct {
@@ -11,23 +17,23 @@ type Config struct {
 
 // ServerConfig holds HTTP server configuration
 type ServerConfig struct {
-	Port         string
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	Port string
+	// ReadTimeout  time.Duration
+	// WriteTimeout time.Duration
 }
 
 // DatabaseConfig holds database connection configuration
 type DatabaseConfig struct {
-	Host        string
-	Port        string
-	User        string
-	Password    string
-	DBName      string
-	SSLMode     string
-	MaxConns    int32
-	MinConns    int32
-	MaxConnLife time.Duration
-	MaxConnIdle time.Duration
+	Host     string
+	Port     string
+	User     string
+	Password string
+	DBName   string
+	SSLMode  string
+	// MaxConns    int32
+	// MinConns    int32
+	// MaxConnLife time.Duration
+	// MaxConnIdle time.Duration
 }
 
 // AppConfig holds application-specific configuration
@@ -53,24 +59,24 @@ func Load() (*Config, error) {
 	// - BASE_URL (e.g., "https://short.url")
 	// - DEFAULT_EXPIRY (default: 0 for no expiry)
 	// - SHORT_CODE_LENGTH (default: 7)
-
+	_ = godotenv.Load()
 	return &Config{
 		Server: ServerConfig{
-			Port:         "8080",
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			Port: getEnv("PORT", "8080"),
+			// ReadTimeout:  10 * time.Second,
+			// WriteTimeout: 10 * time.Second,
 		},
 		Database: DatabaseConfig{
-			Host:        "localhost",
-			Port:        "5432",
-			User:        "postgres",
-			Password:    "postgres",
-			DBName:      "urlshortener",
-			SSLMode:     "disable",
-			MaxConns:    10,
-			MinConns:    2,
-			MaxConnLife: time.Hour,
-			MaxConnIdle: 30 * time.Minute,
+			Host:     getEnv("DB_HOST", "localhost"),
+			Port:     getEnv("DB_PORT", "5434"),
+			User:     getEnv("DB_USER", "zhejian"),
+			Password: getEnv("DB_PASSWORD", "zhejian_secret"),
+			DBName:   getEnv("DB_NAME", "urlshortener"),
+			SSLMode:  getEnv("DB_SSLMODE", "disable"),
+			// MaxConns:    10,
+			// MinConns:    2,
+			// MaxConnLife: time.Hour,
+			// MaxConnIdle: 30 * time.Minute,
 		},
 		App: AppConfig{
 			BaseURL:      "http://localhost:8080",
@@ -85,5 +91,14 @@ func Load() (*Config, error) {
 func (d *DatabaseConfig) ConnectionString() string {
 	// TODO: Build connection string
 	// Format: postgres://user:password@host:port/dbname?sslmode=disable
-	return ""
+	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, d.Host, d.Port, d.DBName, d.SSLMode)
+	// fmt.Printf("%s\n", connectionString)
+	return connectionString
+}
+
+func getEnv(key, defaultVal string) string {
+	if val, ok := os.LookupEnv(key); ok {
+		return val
+	}
+	return defaultVal
 }

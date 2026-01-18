@@ -1,5 +1,4 @@
 package api
-package api
 
 import (
 	"net/http"
