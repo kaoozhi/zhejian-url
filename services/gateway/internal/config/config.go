@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -38,11 +39,12 @@ type DatabaseConfig struct {
 
 // AppConfig holds application-specific configuration
 type AppConfig struct {
-	BaseURL       string // Base URL for generating short links
-	DefaultExpiry time.Duration
-	ShortCodeLen  int
-	MaxAliasLen   int
-	MinAliasLen   int
+	BaseURL          string // Base URL for generating short links
+	DefaultExpiry    time.Duration
+	ShortCodeLen     int
+	ShortCodeRetries int
+	MaxAliasLen      int
+	MinAliasLen      int
 }
 
 // Load loads configuration from environment variables
@@ -79,10 +81,11 @@ func Load() (*Config, error) {
 			// MaxConnIdle: 30 * time.Minute,
 		},
 		App: AppConfig{
-			BaseURL:      "http://localhost:8080",
-			ShortCodeLen: 7,
-			MaxAliasLen:  20,
-			MinAliasLen:  3,
+			BaseURL:          "http://localhost:8080",
+			ShortCodeLen:     getEnvInt("SHORT_CODE_LENGTH", 6),
+			ShortCodeRetries: getEnvInt("SHORT_CODE_MAX_RETRIES", 3),
+			MaxAliasLen:      20,
+			MinAliasLen:      3,
 		},
 	}, nil
 }
@@ -99,6 +102,15 @@ func (d *DatabaseConfig) ConnectionString() string {
 func getEnv(key, defaultVal string) string {
 	if val, ok := os.LookupEnv(key); ok {
 		return val
+	}
+	return defaultVal
+}
+
+func getEnvInt(key string, defaultVal int) int {
+	if val := os.Getenv(key); val != "" {
+		if i, err := strconv.Atoi(val); err == nil {
+			return i
+		}
 	}
 	return defaultVal
 }

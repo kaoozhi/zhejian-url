@@ -97,7 +97,7 @@ db-setup:
 
 ## Connect to database
 db-connect:
-	PGPASSWORD=zhejian_secret psql -h localhost -p 5433 -U zhejian -d urlshortener
+	PGPASSWORD=zhejian_secret psql -h localhost -p 5434 -U zhejian -d urlshortener
 
 # =============================================================================
 # Testing

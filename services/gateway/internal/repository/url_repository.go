@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
@@ -30,16 +32,52 @@ func (r *URLRepository) Create(ctx context.Context, url *model.URL) error {
 	// - Insert into urls table (short_code, original_url, expires_at)
 	// - Return ErrCodeConflict if short_code already exists
 	// - Set url.ID and url.CreatedAt from returned values
+	query := `
+        INSERT INTO urls (id, short_code, original_url, expires_at)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, created_at
+    `
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		url.ID,
+		url.ShortCode,
+		url.OriginalURL,
+		url.ExpiresAt,
+	).Scan(&url.ID, &url.CreatedAt)
+
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrCodeConflict
+		}
+		return err
+	}
+
 	return nil
 }
 
 // GetByCode retrieves a URL by its short code
 func (r *URLRepository) GetByCode(ctx context.Context, code string) (*model.URL, error) {
-	// TODO: Implement database select
-	// - Query urls table by short_code
-	// - Return ErrNotFound if not exists
-	// - Return the URL model
-	return nil, nil
+	query :=
+		`SELECT id, short_code, original_url, created_at, expires_at 
+		FROM urls 
+		WHERE short_code = $1`
+	var url model.URL
+	err := r.db.QueryRow(ctx, query, code).Scan(&url.ID,
+		&url.ShortCode,
+		&url.OriginalURL,
+		&url.CreatedAt,
+		&url.ExpiresAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &url, nil
 }
 
 // Delete removes a URL by its short code
@@ -47,6 +85,15 @@ func (r *URLRepository) Delete(ctx context.Context, code string) error {
 	// TODO: Implement database delete
 	// - Delete from urls table by short_code
 	// - Return ErrNotFound if no rows affected
+	query := `DELETE FROM urls WHERE short_code=$1`
+	result, err := r.db.Exec(ctx, query, code)
+	if err != nil {
+		return err
+	}
+	// Check if any rows were deleted
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
 	return nil
 }
 

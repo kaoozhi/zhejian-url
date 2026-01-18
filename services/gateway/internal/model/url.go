@@ -1,22 +1,26 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // URL represents a shortened URL entity
 type URL struct {
-	ID          int64      `json:"id"`
-	ShortCode   string     `json:"short_code"`
-	OriginalURL string     `json:"original_url"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	ClickCount  int64      `json:"click_count"`
+	ID          uuid.UUID  `db:"id" json:"id"`
+	ShortCode   string     `db:"short_code" json:"short_code"`
+	OriginalURL string     `db:"original_url" json:"original_url"`
+	CreatedAt   time.Time  `db:"created_at" json:"created_at"`
+	ExpiresAt   *time.Time `db:"expires_at" json:"expires_at,omitempty"`
+	ClickCount  int64      `db:"click_count" json:"click_count"`
 }
 
 // CreateURLRequest represents the request body for creating a short URL
 type CreateURLRequest struct {
 	URL         string `json:"url" binding:"required,url"`
 	CustomAlias string `json:"custom_alias,omitempty"`
-	ExpiresIn   int    `json:"expires_in,omitempty"` // Duration in seconds
+	ExpiresIn   int    `json:"expires_in,omitempty"` // Duration in days (0 = never expires)
 }
 
 // CreateURLResponse represents the response for a created short URL

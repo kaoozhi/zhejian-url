@@ -14,17 +14,17 @@ const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 
 // ShortCodeGenerator handles generation of unique short codes
 type ShortCodeGenerator struct {
+	repo       *repository.URLRepository // to check collisions later
 	codeLength int
 	maxRetries int
-	repo       *repository.URLRepository // to check collisions later
 }
 
 // NewShortCodeGenerator creates a new short code generator
 func NewShortCodeGenerator(codeLength int, maxRetries int, repo *repository.URLRepository) *ShortCodeGenerator {
 	return &ShortCodeGenerator{
+		repo:       repo,
 		codeLength: codeLength,
 		maxRetries: maxRetries,
-		repo:       repo,
 	}
 }
 
