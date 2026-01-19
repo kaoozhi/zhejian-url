@@ -111,7 +111,6 @@ func (s *URLService) GetURL(ctx context.Context, code string) (*model.URLRespons
 
 // Redirect retrieves the original URL for redirection
 func (s *URLService) Redirect(ctx context.Context, code string) (string, error) {
-	// TODO: Implement redirect logic
 	url, err := s.getAndValidateURL(ctx, code)
 	if err != nil {
 		return "", err
@@ -122,9 +121,12 @@ func (s *URLService) Redirect(ctx context.Context, code string) (string, error) 
 
 // DeleteURL removes a shortened URL
 func (s *URLService) DeleteURL(ctx context.Context, code string) error {
-	// TODO: Implement URL deletion logic
-	// 1. Delete URL from repository
-	// 2. Handle not found error
+	if err := s.repo.Delete(ctx, code); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return ErrURLNotFound
+		}
+		return err
+	}
 	return nil
 }
 
