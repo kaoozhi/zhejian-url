@@ -27,6 +27,14 @@ type URLService struct {
 	shortCodeRetries int
 }
 
+// URLServiceInterface defines the contract for URL shortening operations
+type URLServiceInterface interface {
+	CreateShortURL(ctx context.Context, req *model.CreateURLRequest) (*model.CreateURLResponse, error)
+	GetURL(ctx context.Context, code string) (*model.URLResponse, error)
+	DeleteURL(ctx context.Context, code string) error
+	Redirect(ctx context.Context, code string) (string, error)
+}
+
 // NewURLService creates a new URL service
 func NewURLService(repo *repository.URLRepository, baseURL string, shortCodeLen int, shortCodeRetries int) *URLService {
 	return &URLService{
@@ -178,3 +186,6 @@ func (s *URLService) getAndValidateURL(ctx context.Context, code string) (*model
 
 	return url, nil
 }
+
+// Ensure URLService implements URLServiceInterface at compile time
+var _ URLServiceInterface = (*URLService)(nil)
