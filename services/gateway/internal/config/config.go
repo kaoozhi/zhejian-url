@@ -61,7 +61,7 @@ func Load() (*Config, error) {
 	// - BASE_URL (e.g., "https://short.url")
 	// - DEFAULT_EXPIRY (default: 0 for no expiry)
 	// - SHORT_CODE_LENGTH (default: 7)
-	_ = godotenv.Load()
+	_ = godotenv.Load("../../../../.env")
 	return &Config{
 		Server: ServerConfig{
 			Port: getEnv("PORT", "8080"),

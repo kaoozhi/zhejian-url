@@ -1,63 +1,86 @@
 package main
 
+import (
+	"context"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/zhejian/url-shortener/gateway/internal/api"
+	"github.com/zhejian/url-shortener/gateway/internal/config"
+	"github.com/zhejian/url-shortener/gateway/internal/repository"
+	"github.com/zhejian/url-shortener/gateway/internal/service"
+)
+
 func main() {
-	// TODO: Load configuration from environment variables or config file
-	// - Database connection string
-	// - Server port
-	// - Base URL for short links
-	// cfg, err := config.Load()
-	// if err != nil {
-	// 	log.Fatalf("Failed to load config: %v", err)
-	// }
+	// Load configuration from environment variables
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
 
-	// log.Printf("Starting server on port %s", cfg.Server.Port)
+	// Create background context for database connection
+	ctx := context.Background()
 
-	// connectionString := cfg.Database.ConnectionString()
-	// // TODO: Initialize database connection pool
-	// ctx := context.Background()
-	// // db, err := repository.NewPostgresPool(ctx, connectionString)
-	// db, err := repository.NewPostgresPool(ctx, connectionString)
-	// if err := db.Ping(ctx); err == nil {
-	// 	log.Printf("db connected")
-	// 	db.Close()
-	// }
-	// TODO: Initialize repository
-	// urlRepo := repository.NewURLRepository(db)
+	// Connect to database
+	connectionString := cfg.Database.ConnectionString()
+	db, err := repository.NewPostgresPool(ctx, connectionString)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
 
-	// TODO: Initialize service
-	// urlService := service.NewURLService(urlRepo, baseURL)
+	// Verify database connectivity
+	if err := db.Ping(ctx); err != nil {
+		log.Fatalf("Failed to ping database: %v", err)
+	}
+	log.Println("Database connected successfully")
 
-	// TODO: Initialize handler and router
-	// handler := api.NewHandler(urlService)
-	// router := handler.SetupRouter()
+	// Initialize repository, service, and handler (dependency injection)
+	urlRepo := repository.NewURLRepository(db)
+	urlService := service.NewURLService(urlRepo, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
+	handler := api.NewHandler(urlService, db)
 
-	// TODO: Create HTTP server
-	// srv := &http.Server{
-	//     Addr:    ":8080",
-	//     Handler: router,
-	// }
+	// Setup router with all routes
+	router := handler.SetupRouter()
 
-	// TODO: Start server in goroutine
-	// go func() {
-	//     if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-	//         log.Fatalf("listen: %s\n", err)
-	//     }
-	// }()
+	// Create HTTP server
+	srv := &http.Server{
+		Addr:         ":" + cfg.Server.Port,
+		Handler:      router,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 
-	// TODO: Graceful shutdown
-	// - Wait for interrupt signal
-	// - Create shutdown context with timeout
-	// - Call srv.Shutdown(ctx)
-	// - Close database connection
+	// Start server in a goroutine
+	go func() {
+		log.Printf("Server starting on port %s", cfg.Server.Port)
+		log.Printf("Base URL: %s", cfg.App.BaseURL)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed to start: %v", err)
+		}
+	}()
 
-	// _ = context.Background()
-	// _ = log.Println
-	// _ = http.StatusOK
-	// _ = os.Getenv
-	// _ = signal.Notify
-	// _ = syscall.SIGINT
-	// _ = time.Second
-	// _ = api.NewHandler
-	// _ = repository.NewURLRepository
-	// _ = service.NewURLService
+	// Graceful shutdown
+	// Wait for interrupt signal (Ctrl+C or SIGTERM)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down server...")
+
+	// Create shutdown context with 10 second timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Attempt graceful shutdown
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	log.Println("Server exited gracefully")
 }
