@@ -6,17 +6,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
 )
 
-var testDB *testutil.TestDB
+var (
+	testDB  *testutil.TestDB
+	testCfg *config.Config
+)
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 
+	// Load test configuration
 	var err error
+	testCfg, err = config.Load()
+	if err != nil {
+		panic("failed to load config: " + err.Error())
+	}
+
 	testDB, err = testutil.SetupTestDB(ctx)
 	if err != nil {
 		panic("failed to setup test database: " + err.Error())
@@ -34,7 +44,7 @@ func TestURLService_CreateShortURL(t *testing.T) {
 	ctx := context.Background()
 
 	repo := repository.NewURLRepository(testDB.Pool)
-	service := NewURLService(repo, "http://localhost:8080", 6, 3)
+	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("creates short URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -57,7 +67,7 @@ func TestURLService_CreateShortURL(t *testing.T) {
 			t.Error("Expected short URL to be generated")
 		}
 
-		expectedURL := "http://localhost:8080/" + resp.ShortCode
+		expectedURL := testCfg.App.BaseURL + "/" + resp.ShortCode
 		if resp.ShortURL != expectedURL {
 			t.Errorf("Expected short URL %s, got %s", expectedURL, resp.ShortURL)
 		}
@@ -144,7 +154,7 @@ func TestURLService_CreateShortURL(t *testing.T) {
 func TestURLService_GetURL(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewURLRepository(testDB.Pool)
-	service := NewURLService(repo, "http://localhost:8080", 6, 3)
+	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("retrieves existing URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -174,8 +184,9 @@ func TestURLService_GetURL(t *testing.T) {
 			t.Errorf("Expected original URL 'https://example.com/original', got %s", urlResp.OriginalURL)
 		}
 
-		if urlResp.ShortURL != "http://localhost:8080/get-test" {
-			t.Errorf("Expected short URL 'http://localhost:8080/get-test', got %s", urlResp.ShortURL)
+		expectedShortURL := testCfg.App.BaseURL + "/get-test"
+		if urlResp.ShortURL != expectedShortURL {
+			t.Errorf("Expected short URL '%s', got %s", expectedShortURL, urlResp.ShortURL)
 		}
 
 		if urlResp.ClickCount != 0 {
@@ -228,7 +239,7 @@ func TestURLService_GetURL(t *testing.T) {
 func TestURLService_Redirect(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewURLRepository(testDB.Pool)
-	service := NewURLService(repo, "http://localhost:8080", 6, 3)
+	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("redirects to original URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -296,7 +307,7 @@ func TestURLService_Redirect(t *testing.T) {
 func TestURLService_DeleteURL(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewURLRepository(testDB.Pool)
-	service := NewURLService(repo, "http://localhost:8080", 6, 3)
+	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("deletes existing URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -380,7 +391,7 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 	testDB.Cleanup(ctx)
 
 	repo := repository.NewURLRepository(testDB.Pool)
-	service := NewURLService(repo, "http://localhost:8080", 6, 3)
+	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("complete URL lifecycle", func(t *testing.T) {
 		// 1. Create a short URL

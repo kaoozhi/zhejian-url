@@ -81,7 +81,7 @@ func Load() (*Config, error) {
 			// MaxConnIdle: 30 * time.Minute,
 		},
 		App: AppConfig{
-			BaseURL:          "http://localhost:8080",
+			BaseURL:          getEnv("BASE_URL", "http://localhost:8080"),
 			ShortCodeLen:     getEnvInt("SHORT_CODE_LENGTH", 6),
 			ShortCodeRetries: getEnvInt("SHORT_CODE_MAX_RETRIES", 3),
 			MaxAliasLen:      20,
