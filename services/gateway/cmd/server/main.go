@@ -9,10 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/zhejian/url-shortener/gateway/internal/api"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
-	"github.com/zhejian/url-shortener/gateway/internal/service"
+	"github.com/zhejian/url-shortener/gateway/internal/server"
 )
 
 func main() {
@@ -39,22 +38,7 @@ func main() {
 	}
 	log.Println("Database connected successfully")
 
-	// Initialize repository, service, and handler (dependency injection)
-	urlRepo := repository.NewURLRepository(db)
-	urlService := service.NewURLService(urlRepo, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
-	handler := api.NewHandler(urlService, db)
-
-	// Setup router with all routes
-	router := handler.SetupRouter()
-
-	// Create HTTP server
-	srv := &http.Server{
-		Addr:         ":" + cfg.Server.Port,
-		Handler:      router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	srv := server.NewServer(cfg, db)
 
 	// Start server in a goroutine
 	go func() {
