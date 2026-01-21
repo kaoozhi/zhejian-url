@@ -149,6 +149,43 @@ func TestURLService_CreateShortURL(t *testing.T) {
 			t.Error("Expected error for duplicate alias, got nil")
 		}
 	})
+
+	t.Run("retries on collision and succeeds", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+
+		req := &model.CreateURLRequest{
+			URL: "https://collision.example",
+		}
+
+		// First creation should succeed and produce a short code
+		resp1, err := service.CreateShortURL(ctx, req)
+		if err != nil {
+			t.Fatalf("Expected first creation to succeed, got %v", err)
+		}
+
+		// Second creation for the same long URL will initially generate
+		// the same candidate short code, causing a conflict; the service
+		// should retry and return a different short code.
+		resp2, err := service.CreateShortURL(ctx, req)
+		if err != nil {
+			t.Fatalf("Expected second creation to succeed after retry, got %v", err)
+		}
+
+		if resp1.ShortCode == resp2.ShortCode {
+			t.Errorf("Expected different short codes after retry, got same %s", resp1.ShortCode)
+		}
+
+		// Verify both short codes exist in DB
+		var count int
+		err = testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", resp1.ShortCode).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("expected first short code to exist, got count=%d err=%v", count, err)
+		}
+		err = testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", resp2.ShortCode).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("expected second short code to exist, got count=%d err=%v", count, err)
+		}
+	})
 }
 
 func TestURLService_GetURL(t *testing.T) {

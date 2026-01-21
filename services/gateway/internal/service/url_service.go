@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,34 +51,57 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 	var shortCode string
 	var err error
 
-	if req.CustomAlias != "" {
-		shortCode = req.CustomAlias
-	} else {
-		g := NewShortCodeGenerator(s.shortCodeLen, s.shortCodeRetries, s.repo)
-		shortCode, err = g.Generate(req.URL)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	var expiresAt *time.Time
 	if req.ExpiresIn > 0 {
 		t := time.Now().AddDate(0, 0, req.ExpiresIn)
 		expiresAt = &t
 	}
 
-	url := &model.URL{
-		ID:          uuid.New(),
-		ShortCode:   shortCode,
-		OriginalURL: req.URL,
-		CreatedAt:   time.Now(),
-		ExpiresAt:   expiresAt,
-		ClickCount:  0,
-	}
-
-	err = s.repo.Create(ctx, url)
-	if err != nil {
-		return nil, err
+	if req.CustomAlias != "" {
+		url := &model.URL{
+			ID:          uuid.New(),
+			ShortCode:   req.CustomAlias,
+			OriginalURL: req.URL,
+			CreatedAt:   time.Now(),
+			ExpiresAt:   expiresAt,
+			ClickCount:  0,
+		}
+		if err := s.repo.Create(ctx, url); err != nil {
+			if errors.Is(err, repository.ErrCodeConflict) {
+				return nil, ErrCodeExists
+			}
+			return nil, err
+		}
+		shortCode = url.ShortCode
+	} else {
+		g := NewShortCodeGenerator(s.shortCodeLen, s.shortCodeRetries, s.repo)
+		created := false
+		for attemp := 0; attemp < s.shortCodeRetries; attemp++ {
+			candidate, genErr := g.Generate(req.URL + strconv.Itoa(attemp))
+			if genErr != nil {
+				return nil, genErr
+			}
+			url := &model.URL{
+				ID:          uuid.New(),
+				ShortCode:   candidate,
+				OriginalURL: req.URL,
+				CreatedAt:   time.Now(),
+				ExpiresAt:   expiresAt,
+				ClickCount:  0,
+			}
+			if err = s.repo.Create(ctx, url); err != nil {
+				if errors.Is(err, repository.ErrCodeConflict) {
+					continue
+				}
+				return nil, err
+			}
+			shortCode = candidate
+			created = true
+			break
+		}
+		if !created {
+			return nil, ErrShortCodeGeneration
+		}
 	}
 
 	// Format expiry for response

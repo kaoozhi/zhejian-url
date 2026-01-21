@@ -333,3 +333,57 @@ func TestGetURL_NotFound(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
+
+// TestCreateShortURL_ServerCollisionRetry verifies that when the server
+// generates the same candidate short code for the same long URL, the
+// service will retry and produce a different short code (server-level).
+func TestCreateShortURL_ServerCollisionRetry(t *testing.T) {
+	ctx := context.Background()
+	testDB.Cleanup(ctx)
+
+	srv := setupTestServer()
+	defer srv.Close()
+
+	longURL := "https://collision-server.example"
+	reqBody := map[string]string{"url": longURL}
+	body, _ := json.Marshal(reqBody)
+
+	// First create
+	resp1, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	var create1 map[string]interface{}
+	json.NewDecoder(resp1.Body).Decode(&create1)
+	resp1.Body.Close()
+	code1 := jsonValueToString(create1["short_code"])
+	require.NotEmpty(t, code1)
+
+	// Second create with same long URL — service should retry on collision
+	resp2, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	var create2 map[string]interface{}
+	json.NewDecoder(resp2.Body).Decode(&create2)
+	resp2.Body.Close()
+	code2 := jsonValueToString(create2["short_code"])
+	require.NotEmpty(t, code2)
+
+	if code1 == code2 {
+		t.Fatalf("expected different short codes after retry, got same %s", code1)
+	}
+
+	// verify both codes resolve to the original URL
+	redirectClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	resp, err := redirectClient.Get(srv.URL + "/" + code1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusMovedPermanently, resp.StatusCode)
+	assert.Equal(t, longURL, resp.Header.Get("Location"))
+	resp.Body.Close()
+
+	resp, err = redirectClient.Get(srv.URL + "/" + code2)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusMovedPermanently, resp.StatusCode)
+	assert.Equal(t, longURL, resp.Header.Get("Location"))
+	resp.Body.Close()
+}
