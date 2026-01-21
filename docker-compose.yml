@@ -20,6 +20,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # postgres_test:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: urlshortener_test
+  #     POSTGRES_PASSWORD: urlshortener_test
+  #     POSTGRES_DB: urlshortener_test
+  #   ports:
+  #     - "5435:5432"  # Different port!
+  #   # No volume - data is ephemeral (good for tests!)
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U urlshortener_test"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+
   # Redis - Caching layer (uncomment when ready)
   # redis:
   #   image: redis:7-alpine
