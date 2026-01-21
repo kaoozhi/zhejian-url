@@ -51,8 +51,6 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 	var err error
 
 	if req.CustomAlias != "" {
-		// Use custom alias
-		// TODO: validate alias and check exists
 		shortCode = req.CustomAlias
 	} else {
 		g := NewShortCodeGenerator(s.shortCodeLen, s.shortCodeRetries, s.repo)
@@ -138,35 +136,10 @@ func (s *URLService) DeleteURL(ctx context.Context, code string) error {
 	return nil
 }
 
-// // generateShortCode generates a unique short code
-// func (s *URLService) generateShortCode(ctx context.Context) (string, error) {
-// 	// TODO: Implement short code generation
-// 	// 1. Generate random bytes or use counter-based approach
-// 	// 2. Encode using Base62 (a-z, A-Z, 0-9)
-// 	// 3. Check for collision in database
-// 	// 4. Retry with new code if collision detected
-// 	// 5. Return unique code
-// 	return "", nil
-// }
-
-// // validateURL checks if the URL is valid
-// func (s *URLService) validateURL(rawURL string) error {
-// 	// TODO: Implement URL validation
-// 	// 1. Parse URL
-// 	// 2. Check scheme (http/https)
-// 	// 3. Check host is present
-// 	// 4. Optionally: check URL is reachable
-// 	return nil
-// }
-
-// // validateAlias checks if the custom alias is valid
-// func (s *URLService) validateAlias(alias string) error {
-// 	// TODO: Implement alias validation
-// 	// 1. Check length (min/max)
-// 	// 2. Check characters (alphanumeric, hyphen, underscore)
-// 	// 3. Check for reserved words
-// 	return nil
-// }
+// Helper methods such as short-code generation, URL validation and
+// alias validation can be added here. The current service uses the
+// `ShortCodeGenerator` for producing codes and relies on repository
+// uniqueness checks to detect collisions.
 
 // getAndValidateURL is a helper that fetches URL and checks expiration
 func (s *URLService) getAndValidateURL(ctx context.Context, code string) (*model.URL, error) {

@@ -28,7 +28,9 @@ func NewShortCodeGenerator(codeLength int, maxRetries int, repo *repository.URLR
 	}
 }
 
-// Canonicalize long url
+// Canonicalize normalizes a long URL for hashing and comparison.
+// It lowercases the host, removes default ports, strips a trailing slash
+// and removes URL fragments.
 func Canonicalize(longURL string) (string, error) {
 	u, err := url.Parse(longURL)
 	if err != nil {
@@ -63,9 +65,12 @@ func HashURL(s string) uint64 {
 	return binary.BigEndian.Uint64(h[:8])
 }
 
-// Generate creates a new short code
+// Generate creates a short code from the given long URL.
+// Current implementation hashes the canonicalized URL and takes the
+// first `codeLength` characters of its Base62 encoding. Collision
+// detection and retry logic (checking the repository) should be
+// implemented externally or added here in the future.
 func (g *ShortCodeGenerator) Generate(longURL string) (string, error) {
-	// TODO: implement collision and retry logic after
 	c, err := Canonicalize(longURL)
 	if err != nil {
 		return "", ErrInvalidURL
@@ -90,10 +95,4 @@ func EncodeBase62(num uint64) string {
 		num = num / 62
 	}
 	return encoded
-}
-
-// DecodeBase62 decodes a Base62 string to number
-func DecodeBase62(s string) (uint64, error) {
-	// TODO: Implement Base62 decoding if needed
-	return 0, nil
 }

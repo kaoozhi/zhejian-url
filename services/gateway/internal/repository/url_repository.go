@@ -28,15 +28,14 @@ func NewURLRepository(db *pgxpool.Pool) *URLRepository {
 
 // Create inserts a new URL record into the database
 func (r *URLRepository) Create(ctx context.Context, url *model.URL) error {
-	// TODO: Implement database insert
-	// - Insert into urls table (short_code, original_url, expires_at)
-	// - Return ErrCodeConflict if short_code already exists
-	// - Set url.ID and url.CreatedAt from returned values
+	// Insert a new URL record. If the short code already exists the
+	// database will return a unique-constraint error which we map to
+	// ErrCodeConflict so callers can handle alias collisions.
 	query := `
-        INSERT INTO urls (id, short_code, original_url, expires_at)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id, created_at
-    `
+		INSERT INTO urls (id, short_code, original_url, expires_at)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, created_at
+	`
 	err := r.db.QueryRow(
 		ctx,
 		query,
@@ -82,39 +81,42 @@ func (r *URLRepository) GetByCode(ctx context.Context, code string) (*model.URL,
 
 // Delete removes a URL by its short code
 func (r *URLRepository) Delete(ctx context.Context, code string) error {
-	// TODO: Implement database delete
-	// - Delete from urls table by short_code
-	// - Return ErrNotFound if no rows affected
+	// Delete a URL by short code and return ErrNotFound when no rows
+	// are affected so callers can translate to a 404 response.
 	query := `DELETE FROM urls WHERE short_code=$1`
 	result, err := r.db.Exec(ctx, query, code)
 	if err != nil {
 		return err
 	}
-	// Check if any rows were deleted
 	if result.RowsAffected() == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-// IncrementClickCount increments the click counter for a URL
-func (r *URLRepository) IncrementClickCount(ctx context.Context, code string) error {
-	// TODO: Implement click count increment
-	// - UPDATE urls SET click_count = click_count + 1 WHERE short_code = $1
-	return nil
-}
+// // IncrementClickCount increments the click counter for a URL
+// func (r *URLRepository) IncrementClickCount(ctx context.Context, code string) error {
+// 	// TODO: Implement click count increment
+// 	// - UPDATE urls SET click_count = click_count + 1 WHERE short_code = $1
+// 	return nil
+// }
 
 // CodeExists checks if a short code already exists
-func (r *URLRepository) CodeExists(ctx context.Context, code string) (bool, error) {
-	// TODO: Implement existence check
-	// - SELECT EXISTS(SELECT 1 FROM urls WHERE short_code = $1)
-	return false, nil
-}
+// func (r *URLRepository) CodeExists(ctx context.Context, code string) (bool, error) {
+// 	// Check whether a short code exists in the database.
+// 	var exists bool
+// 	query := `SELECT EXISTS(SELECT 1 FROM urls WHERE short_code = $1)`
+// 	err := r.db.QueryRow(ctx, query, code).Scan(&exists)
+// 	if err != nil {
+// 		return false, err
+// 	}
+// 	return exists, nil
+// }
 
 // NewPostgresPool creates a new PostgreSQL connection pool
 func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
-	// TODO: Implement connection pool creation
-	// - Parse connection string
+	// Create a pgx connection pool with sensible defaults for the
+	// application. Parse config from the provided connection string.
 	config, err := pgxpool.ParseConfig(connString)
 	if err != nil {
 		return nil, err

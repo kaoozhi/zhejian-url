@@ -49,18 +49,6 @@ type AppConfig struct {
 
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
-	// TODO: Implement configuration loading
-	// 1. Read from environment variables
-	// 2. Apply defaults for missing values
-	// 3. Validate required fields
-	// 4. Return config or error
-
-	// Example environment variables to read:
-	// - SERVER_PORT (default: "8080")
-	// - DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
-	// - BASE_URL (e.g., "https://short.url")
-	// - DEFAULT_EXPIRY (default: 0 for no expiry)
-	// - SHORT_CODE_LENGTH (default: 7)
 	_ = godotenv.Load("../../../../.env")
 	return &Config{
 		Server: ServerConfig{
@@ -92,10 +80,7 @@ func Load() (*Config, error) {
 
 // ConnectionString returns the PostgreSQL connection string
 func (d *DatabaseConfig) ConnectionString() string {
-	// TODO: Build connection string
-	// Format: postgres://user:password@host:port/dbname?sslmode=disable
 	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, d.Host, d.Port, d.DBName, d.SSLMode)
-	// fmt.Printf("%s\n", connectionString)
 	return connectionString
 }
 
