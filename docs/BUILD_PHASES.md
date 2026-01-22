@@ -46,18 +46,10 @@ Verify code quality and run tests automatically on every push and pull request.
 1. **CI workflow**
    - Add a CI pipeline (GitHub Actions / GitLab CI) to run on push/PR.
    - Steps: `go fmt`, `go vet`, `golangci-lint`, `go test ./... -v` (unit + fast integration).
-   - Optionally run heavyweight integration jobs (testcontainers) on a separate job or on protected branches.
-2. **Test reliability**
-   - Run DB migrations in CI for integration tests (use `scripts/migrate.sh` or `golang-migrate`).
-   - Cache modules and Docker layers to speed builds.
-3. **Automation housekeeping**
-   - Add Makefile targets (`make test`, `make lint`, `make ci-integration`).
-   - Add test badges to README and protect main branch to require green CI.
 
 ### Deliverables
-- CI workflow file (e.g. `.github/workflows/ci.yml`)
+- CI workflow file (e.g. `.github/workflows/go.yml`)
 - Linting and test jobs passing for PRs
-- Fast/optional heavy integration job separation
 
 ### Notes
 - Keep slow, Docker-dependent integration tests optional for PRs; run them on main or nightly builds.
