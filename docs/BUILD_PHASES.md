@@ -1,8 +1,10 @@
-# Build Phases Guide
+# URL Shortener Build Phases - Production-Grade Plan
 
-This document outlines the recommended build order for constructing the URL shortener system.
+This document outlines the refined build order optimized for production quality and realistic failure simulation.
 
-## Phase 1: Core Foundation (Week 1-2)
+---
+
+## Phase 1: Core Foundation ✅ COMPLETED
 
 ### Objective
 Get a minimal working URL shortener with PostgreSQL storage.
@@ -10,8 +12,8 @@ Get a minimal working URL shortener with PostgreSQL storage.
 ### Tasks
 1. **Database Schema Design**
    - URLs table (short_code, original_url, created_at, expires_at, click_count)
-   - Analytics table (for future use)
-   - Indexes for fast lookups
+   - Analytics table (click_id, short_code, clicked_at, ip, user_agent, referer)
+   - Indexes for fast lookups (short_code, created_at)
 
 2. **Go Gateway - Basic CRUD**
    - POST /api/v1/shorten - Create short URL
@@ -30,308 +32,672 @@ Get a minimal working URL shortener with PostgreSQL storage.
 - Request logging
 - Unit tests for core logic
 
-### Key Learning
-- Go HTTP server patterns
-- Database connection pooling
-- RESTful API design
-
 ---
 
-## Phase 2: CI & Test Automation (Week 2-3)
+## Phase 2: CI & Test Automation ✅ COMPLETED
 
 ### Objective
 Verify code quality and run tests automatically on every push and pull request.
 
 ### Tasks
-1. **CI workflow**
-   - Add a CI pipeline (GitHub Actions / GitLab CI) to run on push/PR.
-   - Steps: `go fmt`, `go vet`, `golangci-lint`, `go test ./... -v` (unit + fast integration).
+1. **CI Workflow**
+   - GitHub Actions workflow on push/PR
+   - Steps: `go fmt`, `go vet`, `golangci-lint`, `go test ./... -v`
+   - Fast unit tests + integration tests with dockerized Postgres
 
 ### Deliverables
-- CI workflow file (e.g. `.github/workflows/go.yml`)
-- Linting and test jobs passing for PRs
+- `.github/workflows/ci.yml`
+- Linting and test jobs passing
+- Code coverage reporting (target: 70%+)
 
-### Notes
-- Keep slow, Docker-dependent integration tests optional for PRs; run them on main or nightly builds.
+---
 
-## Phase 3: Build & Deployment (CD) (Week 3-4)
+## Phase 3: Build & Deployment (CD)
 
 ### Objective
-Build container images and deploy to staging/production reliably.
+Build container images and deploy to staging with Toxiproxy for chaos testing from day one.
 
 ### Tasks
-1. **Build pipeline**
-   - Build container images (`docker build`, `buildx`) and tag with commit SHA.
-   - Push images to a registry (GHCR, ECR, GCR) on successful main branch builds.
-2. **Migrations & deploy**
-   - Run DB migrations as part of deployment (idempotent migration step) or a separate migration job with locking.
-   - Deploy to staging (docker-compose, VM, or Kubernetes). Add manifests under `infrastructure/`.
-3. **Release strategy & safety**
-   - Implement rolling/canary deploys and health checks (readiness/liveness).
-   - Add rollback steps and deployment gating (manual approvals for production).
-4. **Secrets & observability**
-   - Manage secrets securely (GitHub Secrets, Vault, SOPS) and add basic monitoring/health endpoints.
+1. **Build Pipeline**
+   - Build container images with `docker buildx`
+   - Tag with commit SHA (immutable tags)
+   - Push to container registry (GHCR/ECR)
+
+2. **Infrastructure as Code**
+   - `docker-compose.yml` for local dev
+   - `docker-compose.prod.yml` for production-like deployment
+   - `docker-compose.chaos.yml` with Toxiproxy integration
+
+3. **Database Migrations**
+   - Migration tool setup (golang-migrate or similar)
+   - Idempotent migrations with locking
+   - Run migrations before service deployment
+
+4. **Health Checks & Deployment Safety**
+   - Readiness probe: `/health/ready` (checks DB connection)
+   - Liveness probe: `/health/live` (simple ping)
+   - Rolling deployment strategy
+   - Rollback capability
+
+5. **Toxiproxy Integration** 🎯
+   - Proxy all external dependencies (Postgres, Redis)
+   - Chaos testing endpoints ready from deployment
+   - Baseline failure injection scripts
 
 ### Deliverables
-- `.github/workflows/cd.yml` for build/push/deploy
-- `infrastructure/` manifests or Helm charts
-- `deploy`/`promote` scripts or Makefile targets
+- `.github/workflows/cd.yml` (build → push → deploy)
+- `infrastructure/` directory with all manifests
+- `Makefile` with deploy targets
+- Toxiproxy routing configured
+- Health check endpoints implemented
 
-### Notes
-- Use immutable image tags and run migrations safely before service rollout.
-- Keep deployment steps idempotent and observable.
+### Docker Compose Structure
+```yaml
+# docker-compose.chaos.yml
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy
+    ports: ["8474:8474"]
+    
+  gateway:
+    environment:
+      POSTGRES_URL: toxiproxy:5432  # Route through proxy
+      REDIS_URL: toxiproxy:6379
+    depends_on: [toxiproxy]
+```
 
+### Key Learning
+- Deployment automation
+- Immutable infrastructure
+- Health check patterns
+- Chaos engineering infrastructure
 
-## Phase 2: Caching Layer (Week 3)
+---
+
+## Phase 4: Caching Layer
 
 ### Objective
-Add Redis caching with cache-aside pattern.
+Add Redis caching with graceful degradation and basic observability.
 
 ### Tasks
 1. **Redis Integration**
-   - Connection pool setup
-   - Cache-aside pattern implementation
+   - Connection pool with retry logic
+   - Cache-aside pattern (read-through on miss)
+   - Write-through on URL creation
    - TTL-based expiration
 
 2. **Cache Strategies**
-   - Read-through on cache miss
-   - Write-through on URL creation
-   - Cache invalidation on deletion
+   - Bloom filter for existence checks (prevents DB queries for non-existent URLs)
+   - Cache warming on startup (top 1000 URLs)
+   - Cache stampede prevention (singleflight pattern)
 
 3. **Graceful Degradation**
-   - Handle Redis connection failures
-   - Fall back to PostgreSQL
-   - Log cache failures for monitoring
+   - Circuit breaker for Redis calls
+   - Fall back to PostgreSQL on cache failure
+   - Configurable failure injection for testing
+
+4. **Basic Observability** 🆕
+   - Prometheus `/metrics` endpoint
+   - Key metrics:
+     - `http_request_duration_seconds` (histogram)
+     - `cache_hits_total` / `cache_misses_total` (counters)
+     - `db_queries_total` (counter)
+     - `errors_total` by type (counter)
 
 ### Deliverables
 - Redis caching working
-- Measurable latency improvement
-- Cache hit/miss metrics
+- Measurable latency improvement (baseline: <50ms p99)
+- Cache hit ratio tracking (target: >80%)
+- Prometheus metrics exportable
+- Failure injection config for Redis
 
-### Key Learning
-- Redis data structures
-- Caching patterns
-- Handling distributed system failures
+### Performance Targets
+- Cache hit: <5ms p99
+- Cache miss: <50ms p99
+- Cache hit ratio: >80% after warmup
 
 ---
 
-## Phase 3: Rust Rate Limiter (Week 4-5)
+## Phase 5: Rust Rate Limiter with gRPC
 
 ### Objective
-Build a low-latency rate limiting service in Rust.
+Build a low-latency rate limiting service in Rust with gateway-first architecture.
 
 ### Tasks
-1. **Rate Limiting Algorithms**
+1. **Architecture Pattern** 🎯
+   - Gateway-first: Client → Gateway → Rate Limiter (gRPC)
+   - Rate limiter returns (allowed: bool, retry_after: u32)
+   - Gateway enforces decision
+   - Fail-open strategy when rate limiter unavailable
+
+2. **Rate Limiting Algorithms**
    - Token bucket implementation
-   - Sliding window counter (alternative)
+   - Redis-backed token storage
    - Per-IP and per-API-key limits
+   - Atomic operations for distributed consistency
 
-2. **Service Interface**
-   - HTTP endpoint for rate limit checks
-   - gRPC interface (optional, for lower latency)
-   - Bulk check support
+3. **gRPC Service Interface**
+   - `CheckRateLimit(ip, api_key) → RateLimitResponse`
+   - Target latency: <5ms p99
+   - Bulk check support for batch requests
 
-3. **Gateway Integration**
-   - Middleware for rate limit checks
-   - Async rate limit updates
-   - Fallback to local limiting
+4. **Gateway Integration**
+   - gRPC client in gateway middleware
+   - Circuit breaker for rate limiter calls
+   - Timeout: 100ms (fail open after timeout)
+   - Fallback to local in-memory rate limiting
 
-4. **Distributed State**
-   - Redis-backed token counts
-   - Atomic operations for consistency
-   - State synchronization between instances
+5. **Toxiproxy Integration** 🎯
+   - Route Gateway → Rate Limiter through proxy
+   - Chaos scenarios:
+     - 100% connection failures
+     - 500ms latency injection
+     - 50% packet loss
+   - Verify circuit breaker and fallback behavior
 
 ### Deliverables
 - Working Rust rate limiter service
-- Gateway integration
-- Sub-millisecond response times
+- gRPC interface implemented
+- Gateway integration with circuit breaker
+- Sub-5ms p99 response time
+- Toxiproxy chaos scenarios documented
+- Fallback behavior tested (fail open vs fail closed)
 
-### Key Learning
-- Rust async programming
-- Service-to-service communication
-- Distributed state management
+### Chaos Scenarios to Document
+```bash
+# Scenario 1: Rate limiter complete failure
+toxiproxy-cli toxic add rate_limiter -t timeout
+
+# Scenario 2: High latency
+toxiproxy-cli toxic add rate_limiter -t latency -a latency=500
+
+# Scenario 3: Intermittent failures
+toxiproxy-cli toxic add rate_limiter -t limit_data -a bytes=1000
+```
 
 ---
 
-## Phase 4: Async Processing with RabbitMQ (Week 6)
+## Phase 6: Async Click Analytics with RabbitMQ
 
 ### Objective
-Implement asynchronous cache updates and reliable message processing.
+Implement high-throughput click analytics pipeline demonstrating async processing benefits.
 
 ### Tasks
 1. **RabbitMQ Setup**
-   - Exchange and queue configuration
-   - Dead letter queue for failures
-   - Message durability settings
+   - Topic exchange: `analytics`
+   - Queues: `analytics.clicks`, `analytics.clicks.dlq`
+   - Dead letter queue configuration
+   - Message persistence enabled
 
-2. **Cache Update Worker**
-   - Consume cache update events
-   - Batch processing for efficiency
-   - Retry logic with backoff
-
-3. **Event Publishing**
-   - Publish on URL creation/update/delete
-   - Message schema design
+2. **Click Event Publishing**
+   - Fire-and-forget from redirect handler
+   - Event schema:
+     ```json
+     {
+       "short_code": "abc123",
+       "clicked_at": "2026-01-22T10:30:00Z",
+       "ip": "1.2.3.4",
+       "user_agent": "...",
+       "referer": "https://twitter.com"
+     }
+     ```
    - Publisher confirms for reliability
+   - Circuit breaker on publish failures (fallback: log locally)
 
-4. **Error Handling**
-   - Dead letter queue processing
-   - Alert on DLQ growth
-   - Manual retry capabilities
+3. **Analytics Worker**
+   - Consume from `analytics.clicks` queue
+   - Batch processing: 1000 events → 1 DB INSERT
+   - Configurable batch size and flush interval
+   - Retry logic with exponential backoff
+   - DLQ processing for permanent failures
+
+4. **Performance Comparison** 🎯
+   - Synchronous mode: Direct DB insert on redirect
+   - Asynchronous mode: RabbitMQ + worker
+   - Benchmarking with k6:
+     - Measure redirect latency (target: <10ms async vs >100ms sync)
+     - Measure throughput (target: 5x improvement)
+
+5. **Monitoring**
+   - Queue depth metrics
+   - Processing rate (events/sec)
+   - Batch efficiency (events per INSERT)
+   - DLQ depth (alerts on growth)
 
 ### Deliverables
-- Async cache update pipeline
-- Reliable message processing
-- DLQ monitoring
+- RabbitMQ analytics pipeline working
+- k6 load test scripts comparing sync vs async
+- Grafana dashboard showing performance improvement
+- DLQ handling with retry logic
+- Demo script: `make demo-analytics`
 
-### Key Learning
-- Message queue patterns
-- Eventual consistency
-- Reliable message delivery
+### Demo Flow (30 seconds)
+```bash
+# 1. Baseline (sync): 100 VUs, show latency
+k6 run --vus 100 tests/clicks-sync.js
+
+# 2. Switch to async mode
+curl -X POST localhost:8080/admin/analytics/async
+
+# 3. High load (async): 1000 VUs, show improvement
+k6 run --vus 1000 tests/clicks-async.js
+
+# Result: 5x throughput, 15x latency reduction
+```
+
+### Optional: Link Expiration (Nice to Have)
+- Delayed message queue for TTL-based cleanup
+- `lifecycle.expirations` queue
+- Worker processes expired URLs
+- Demo with 30s TTL for fast demonstration
 
 ---
 
-## Phase 5: Resilience Patterns (Week 7)
+## Phase 7: Resilience Patterns
 
 ### Objective
-Add circuit breakers, retries, and backpressure handling.
+Add circuit breakers, retries, and comprehensive failure handling.
 
 ### Tasks
-1. **Circuit Breakers**
-   - Wrap PostgreSQL calls
-   - Wrap Redis calls
-   - Wrap Rate Limiter calls
-   - Half-open state handling
+1. **Circuit Breakers** 🎯
+   - Wrap all external service calls:
+     - PostgreSQL queries
+     - Redis operations
+     - Rate limiter gRPC calls
+     - RabbitMQ publish
+   - Configurable thresholds (errors, timeout, half-open)
+   - Metrics for circuit breaker state
 
 2. **Retry Logic**
    - Exponential backoff with jitter
-   - Configurable retry counts
-   - Idempotency considerations
+   - Configurable retry counts per service
+   - Idempotency considerations (use request IDs)
 
-3. **Backpressure**
-   - Request queue limits
-   - Graceful rejection (429 responses)
-   - Load shedding strategies
+3. **Backpressure Handling**
+   - Request queue limits (reject with 429 if full)
+   - Load shedding strategies (drop low-priority requests)
+   - Graceful degradation levels
 
-4. **Health Checks**
-   - Liveness probe
-   - Readiness probe
-   - Dependency health aggregation
+4. **Concrete Chaos Scenarios** 🎯
+
+   **Scenario 1: PostgreSQL Failure**
+   ```bash
+   # Inject: 100% connection timeout
+   toxiproxy-cli toxic add postgres -t timeout -a timeout=0
+   
+   # Expected:
+   # - Circuit breaker opens after 5 failures
+   # - Health check returns unhealthy
+   # - Service returns 503 Service Unavailable
+   # - Auto-recovery when DB restored
+   
+   # Verify:
+   curl localhost:8080/health/ready  # Returns 503
+   toxiproxy-cli toxic remove postgres timeout
+   sleep 10
+   curl localhost:8080/health/ready  # Returns 200
+   ```
+
+   **Scenario 2: Redis Partial Failure**
+   ```bash
+   # Inject: 50% packet loss
+   toxiproxy-cli toxic add redis -t limit_data -a bytes=100
+   
+   # Expected:
+   # - Retries succeed eventually (with backoff)
+   # - Latency increases but requests succeed
+   # - Cache hit ratio drops, more DB queries
+   
+   # Verify metrics:
+   curl localhost:9090/metrics | grep cache_misses_total
+   ```
+
+   **Scenario 3: Rate Limiter Slow**
+   ```bash
+   # Inject: +500ms latency
+   toxiproxy-cli toxic add rate_limiter -t latency -a latency=500
+   
+   # Expected:
+   # - Gateway timeout after 100ms
+   # - Circuit breaker opens
+   # - Fallback to local rate limiting
+   # - URLs still created (degraded mode)
+   
+   # Verify:
+   curl -w "@curl-format.txt" localhost:8080/api/v1/shorten
+   # Response time: <150ms (didn't wait for 500ms)
+   ```
+
+   **Scenario 4: RabbitMQ Complete Failure**
+   ```bash
+   # Inject: Stop RabbitMQ entirely
+   docker-compose stop rabbitmq
+   
+   # Expected:
+   # - Redirects still work (fire-and-forget)
+   # - Analytics events lost (acceptable)
+   # - Circuit breaker prevents retry spam
+   # - Logs indicate analytics unavailable
+   
+   # Verify:
+   k6 run tests/redirects.js  # Still succeeds
+   curl localhost:9090/metrics | grep analytics_publish_errors
+   ```
+
+   **Scenario 5: Cascading Failure**
+   ```bash
+   # Inject: Kill Postgres → Redis overload → Rate limiter can't update
+   docker-compose stop postgres
+   
+   # Expected:
+   # - Gateway circuit breaker opens
+   # - Redis queries increase (more cache misses)
+   # - Rate limiter can't persist limits (uses local state)
+   # - Graceful degradation at each layer
+   # - System recovers when Postgres restored
+   ```
 
 ### Deliverables
-- Resilient service communication
-- Graceful degradation under failure
-- Health check endpoints
+- Circuit breakers on all external dependencies
+- Retry logic with configurable backoff
+- 5 documented chaos scenarios with verification steps
+- Health check aggregating all dependencies
+- Grafana dashboard showing circuit breaker states
 
-### Key Learning
-- Distributed systems resilience
-- Failure isolation
-- Graceful degradation
+### Chaos Testing Automation
+```bash
+# scripts/chaos-test.sh
+#!/bin/bash
+echo "Running chaos scenario: $1"
+case $1 in
+  postgres-failure)
+    ./scenarios/postgres-failure.sh
+    ;;
+  redis-degradation)
+    ./scenarios/redis-degradation.sh
+    ;;
+  # ... etc
+esac
+```
 
 ---
 
-## Phase 6: Observability (Week 8)
+## Phase 8: Load Testing
 
 ### Objective
-Add comprehensive monitoring, metrics, and tracing.
+Validate system performance under realistic load.
 
 ### Tasks
-1. **Prometheus Metrics**
-   - Request latency histograms
-   - Cache hit/miss counters
-   - Rate limit rejection counters
-   - Circuit breaker state gauges
+1. **k6 Test Scenarios**
 
-2. **Grafana Dashboards**
-   - System overview dashboard
-   - Per-service dashboards
-   - Alert definitions
+   **Baseline Load Test**
+   ```javascript
+   // tests/baseline.js
+   export let options = {
+     stages: [
+       { duration: '2m', target: 100 },   // Ramp up
+       { duration: '5m', target: 100 },   // Steady state
+       { duration: '2m', target: 0 },     // Ramp down
+     ],
+     thresholds: {
+       http_req_duration: ['p(95)<100'],  // 95% under 100ms
+       http_req_failed: ['rate<0.01'],    // <1% errors
+     },
+   };
+   ```
 
-3. **Distributed Tracing**
+   **Spike Test**
+   ```javascript
+   // tests/spike.js
+   export let options = {
+     stages: [
+       { duration: '1m', target: 100 },
+       { duration: '30s', target: 1000 },  // Sudden spike
+       { duration: '1m', target: 100 },
+     ],
+   };
+   ```
+
+   **Endurance Test**
+   ```javascript
+   // tests/endurance.js
+   export let options = {
+     stages: [
+       { duration: '5m', target: 200 },
+       { duration: '60m', target: 200 },  // Sustained load
+     ],
+   };
+   ```
+
+2. **Performance Targets**
+   - URL creation: <100ms p95, 500 req/s
+   - Redirects (cached): <10ms p95, 5000 req/s
+   - Redirects (uncached): <50ms p95, 1000 req/s
+
+3. **Realistic Traffic Patterns**
+   - 80% reads (redirects), 20% writes (create)
+   - Zipf distribution for URL popularity
+   - Realistic user agents and referers
+
+### Deliverables
+- k6 test suite (baseline, spike, endurance)
+- Performance test results documented
+- CI integration (run on main branch)
+
+---
+
+## Phase 9: Chaos Engineering Deep Dive 🎯 EXTENDED
+
+### Objective
+Comprehensive chaos testing with automated scenarios and visual dashboards.
+
+### Tasks
+1. **Automated Chaos Scenarios**
+   - All 5 scenarios from Phase 7 automated
+   - Chaos testing pipeline in CI (optional, nightly)
+   - Experiment tracking (what, when, result)
+
+2. **Chaos Testing Dashboard** 🆕
+   - Real-time metrics during chaos experiments
+   - Experiment history and results
+   - UI to trigger Toxiproxy failures
+   - Recovery time tracking
+
+3. **Chaos Scenarios with Analytics** 🎯
+   - Run analytics load test DURING chaos
+   - Verify queue absorbs traffic when worker dies
+   - Measure recovery time when services restored
+
+   **Example: Analytics Resilience Test**
+   ```bash
+   # Start analytics load
+   k6 run --vus 1000 --duration 120s clicks.js &
+   
+   # t=30s: Kill all analytics workers
+   docker-compose stop analytics-worker
+   
+   # Observe:
+   # - Redirects still fast (<10ms)
+   # - Queue depth grows
+   # - No analytics processed
+   
+   # t=60s: Restart workers
+   docker-compose up -d analytics-worker
+   
+   # Observe:
+   # - Queue drains
+   # - All events eventually processed
+   # - Zero data loss
+   
+   # Result: System resilient to worker failures
+   ```
+
+4. **Documentation**
+   - Chaos testing runbook
+   - Expected behavior for each scenario
+   - Recovery procedures
+
+### Deliverables
+- 10+ chaos scenarios automated
+- Chaos dashboard (optional: simple HTML/React)
+- Video/GIF demos of key scenarios
+- Complete chaos testing documentation
+
+---
+
+## Phase 10: Observability Expansion
+
+### Objective
+Complete observability stack with dashboards and alerting.
+
+### Tasks
+1. **Grafana Dashboards**
+   - System overview (RED metrics: Rate, Errors, Duration)
+   - Per-service dashboards (Gateway, Rate Limiter, Workers)
+   - Chaos testing dashboard (circuit breaker states, recovery times)
+   - Analytics pipeline dashboard (queue depth, processing rate)
+
+2. **Distributed Tracing** (Optional)
    - OpenTelemetry integration
    - Trace context propagation
-   - Jaeger/Zipkin setup
+   - Jaeger setup
+
+3. **Alert Rules**
+   - High error rate (>1%)
+   - High latency (p95 >200ms)
+   - Circuit breaker open
+   - Queue depth growing (>10k messages)
+   - DLQ not empty
 
 4. **Structured Logging**
    - JSON log format
-   - Correlation IDs
-   - Log aggregation (optional: ELK/Loki)
+   - Correlation IDs across services
+   - Request/response logging
 
 ### Deliverables
-- Complete observability stack
-- Pre-built dashboards
-- Alerting rules
-
-### Key Learning
-- Observability best practices
-- Metrics-driven debugging
-- Distributed tracing
+- Production-ready Grafana dashboards
+- Alert rules configured
+- (Optional) Distributed tracing working
+- Log aggregation setup
 
 ---
 
-## Phase 7: Testing & Chaos Engineering (Week 9-10)
+## Phase 11: Documentation & Polish
 
 ### Objective
-Validate system behavior under load and failure conditions.
+Create portfolio-quality documentation and demo materials.
 
 ### Tasks
-1. **Load Testing**
-   - k6 or Vegeta scripts
-   - Gradual ramp-up tests
-   - Spike testing
-   - Endurance testing
+1. **Architecture Documentation**
+   - System architecture diagram
+   - Data flow diagrams
+   - Deployment architecture
+   - Decision logs (ADRs)
 
-2. **Chaos Testing**
-   - Network partition simulation
-   - Service failure injection
-   - Latency injection
-   - Resource exhaustion tests
+2. **README Excellence**
+   - Clear project overview
+   - Quick start guide
+   - Demo instructions
+   - Architecture section
+   - Performance benchmarks
+   - Chaos testing showcase
 
-3. **Integration Tests**
-   - End-to-end API tests
-   - Cross-service integration tests
-   - Database migration tests
+3. **Demo Materials**
+   - 5-minute demo script
+   - Screenshots/GIFs of chaos scenarios
+   - Performance comparison charts
+   - Video walkthrough (optional)
+
+4. **Code Quality**
+   - Code cleanup and refactoring
+   - Comprehensive comments
+   - API documentation (OpenAPI spec)
 
 ### Deliverables
-- Load test suite
-- Chaos test scenarios
-- CI/CD integration
-
-### Key Learning
-- Performance testing
-- Chaos engineering principles
-- System reliability validation
+- Professional README with visuals
+- Architecture diagrams
+- Demo script and materials
+- Clean, well-documented codebase
 
 ---
 
-## Phase 8: Frontend Dashboard (Week 11-12)
+## Timeline Summary (12 Weeks)
 
-### Objective
-Build real-time monitoring dashboard and chaos engineering panel.
+```
+Week 1-2:  ✅ Phase 1 - Core Foundation
+Week 2-3:  ✅ Phase 2 - CI/Test Automation
+Week 3-4:  Phase 3 - Build & Deployment + Toxiproxy
+Week 4-5:  Phase 4 - Caching + Basic Observability
+Week 5-6:  Phase 5 - Rust Rate Limiter + gRPC
+Week 6-7:  Phase 6 - RabbitMQ Click Analytics
+Week 7:    Phase 7 - Resilience Patterns
+Week 8:    Phase 8 - Load Testing
+Week 9-10: Phase 9 - Chaos Engineering (Extended)
+Week 11:   Phase 10 - Observability Expansion
+Week 12:   Phase 11 - Documentation & Polish
+```
 
-### Tasks
-1. **Real-time Dashboard**
-   - System health overview
-   - Live metrics visualization
-   - URL analytics
-   - WebSocket for real-time updates
+---
 
-2. **Chaos Engineering Panel**
-   - Inject failures via UI
-   - Monitor system response
-   - Experiment history
+## Key Changes from Original Plan
 
-3. **Admin Interface**
-   - URL management
-   - Rate limit configuration
-   - User management (if applicable)
+1. **Moved CD (Phase 3) before complex features** - Deploy infrastructure early
+2. **Integrated Toxiproxy from Phase 3** - Chaos testing infrastructure ready from start
+3. **Focused RabbitMQ on click analytics** - Clear, demonstrable use case
+4. **Made link expiration optional** - Nice to have, not critical path
+5. **Extended chaos testing (Phase 9)** - More time for comprehensive scenarios
+6. **Added basic observability in Phase 4** - Metrics from the start
+7. **Concrete chaos scenarios with verification** - Not just theory, actual runnable tests
 
-### Deliverables
-- React/Next.js dashboard
-- WebSocket integration
-- Chaos panel
+---
 
-### Key Learning
-- Real-time web applications
-- Data visualization
-- Full-stack integration
+## Success Criteria
+
+**Production-Grade Indicators:**
+- ✅ Deployed system with CI/CD pipeline
+- ✅ Sub-10ms redirect latency (p95)
+- ✅ Handles 5000+ req/s for redirects
+- ✅ 5+ chaos scenarios documented and automated
+- ✅ Circuit breakers prevent cascading failures
+- ✅ Zero data loss in analytics pipeline
+- ✅ Grafana dashboards showing system health
+- ✅ Professional documentation with architecture diagrams
+
+**Portfolio Impact:**
+- Shows distributed systems expertise
+- Demonstrates chaos engineering practices
+- Proves performance optimization skills
+- Exhibits production-ready code quality
+- Provides clear before/after metrics (RabbitMQ benefit)
+
+---
+
+## Quick Reference: Make Targets
+
+```makefile
+# Development
+make dev                    # Start all services locally
+make test                   # Run all tests
+make lint                   # Run linters
+
+# Deployment
+make build                  # Build container images
+make deploy-staging         # Deploy to staging
+make deploy-prod            # Deploy to production
+
+# Chaos Testing
+make chaos-postgres         # PostgreSQL failure scenario
+make chaos-redis            # Redis degradation scenario
+make chaos-rate-limiter     # Rate limiter failure scenario
+make chaos-rabbitmq         # RabbitMQ failure scenario
+make chaos-all              # Run all chaos scenarios
+
+# Demos
+make demo-analytics         # Analytics performance demo
+make demo-expiration        # Link expiration demo (optional)
+
+# Load Testing
+make load-baseline          # Baseline load test
+make load-spike             # Spike test
+make load-endurance         # Endurance test
+```
