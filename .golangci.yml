@@ -1,0 +1,15 @@
+run:
+  timeout: 5m
+  # Do NOT run linters on test files
+  tests: false
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - gofmt
+
+linters-settings:
+  gofmt:
+    simplify: true
+    

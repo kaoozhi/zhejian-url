@@ -37,6 +37,51 @@ Get a minimal working URL shortener with PostgreSQL storage.
 
 ---
 
+## Phase 2: CI & Test Automation (Week 2-3)
+
+### Objective
+Verify code quality and run tests automatically on every push and pull request.
+
+### Tasks
+1. **CI workflow**
+   - Add a CI pipeline (GitHub Actions / GitLab CI) to run on push/PR.
+   - Steps: `go fmt`, `go vet`, `golangci-lint`, `go test ./... -v` (unit + fast integration).
+
+### Deliverables
+- CI workflow file (e.g. `.github/workflows/go.yml`)
+- Linting and test jobs passing for PRs
+
+### Notes
+- Keep slow, Docker-dependent integration tests optional for PRs; run them on main or nightly builds.
+
+## Phase 3: Build & Deployment (CD) (Week 3-4)
+
+### Objective
+Build container images and deploy to staging/production reliably.
+
+### Tasks
+1. **Build pipeline**
+   - Build container images (`docker build`, `buildx`) and tag with commit SHA.
+   - Push images to a registry (GHCR, ECR, GCR) on successful main branch builds.
+2. **Migrations & deploy**
+   - Run DB migrations as part of deployment (idempotent migration step) or a separate migration job with locking.
+   - Deploy to staging (docker-compose, VM, or Kubernetes). Add manifests under `infrastructure/`.
+3. **Release strategy & safety**
+   - Implement rolling/canary deploys and health checks (readiness/liveness).
+   - Add rollback steps and deployment gating (manual approvals for production).
+4. **Secrets & observability**
+   - Manage secrets securely (GitHub Secrets, Vault, SOPS) and add basic monitoring/health endpoints.
+
+### Deliverables
+- `.github/workflows/cd.yml` for build/push/deploy
+- `infrastructure/` manifests or Helm charts
+- `deploy`/`promote` scripts or Makefile targets
+
+### Notes
+- Use immutable image tags and run migrations safely before service rollout.
+- Keep deployment steps idempotent and observable.
+
+
 ## Phase 2: Caching Layer (Week 3)
 
 ### Objective
