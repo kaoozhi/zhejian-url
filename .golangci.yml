@@ -1,0 +1,22 @@
+run:
+  timeout: 5m
+  # Do NOT run linters on test files
+  tests: false
+  # Extra safeguard: skip any file that ends with _test.go
+  skip-files:
+    - '.*_test\.go$'
+    - '.*testdb\.go$'
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - gofmt
+
+linters-settings:
+  gofmt:
+    simplify: true
+
+issues:
+  # You can add exclude-rules here if needed for specific false-positives
+  exclude-rules: []

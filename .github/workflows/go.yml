@@ -28,3 +28,12 @@ jobs:
       - name: Test
         working-directory: services/gateway
         run: go test -v ./...
+      
+      - name: Check
+        working-directory: services/gateway
+        run: |
+          go vet ./...
+          gofmt -s -w .
+          git diff --exit-code
+          golangci-lint run ./...
+        
