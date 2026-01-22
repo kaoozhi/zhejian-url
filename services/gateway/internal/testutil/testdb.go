@@ -40,18 +40,24 @@ func SetupTestDB(ctx context.Context) (*TestDB, error) {
 
 	connString, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		container.Terminate(ctx)
+		if terr := container.Terminate(ctx); terr != nil {
+			err = terr
+		}
 		return nil, err
 	}
 
 	if err := runMigrations(connString); err != nil {
-		container.Terminate(ctx)
+		if terr := container.Terminate(ctx); terr != nil {
+			err = terr
+		}
 		return nil, err
 	}
 
 	pool, err := pgxpool.New(ctx, connString)
 	if err != nil {
-		container.Terminate(ctx)
+		if terr := container.Terminate(ctx); terr != nil {
+			err = terr
+		}
 		return nil, err
 	}
 
@@ -60,7 +66,12 @@ func SetupTestDB(ctx context.Context) (*TestDB, error) {
 
 // Cleanup truncates all tables
 func (t *TestDB) Cleanup(ctx context.Context) {
-	t.Pool.Exec(ctx, "TRUNCATE TABLE urls RESTART IDENTITY")
+	if t == nil || t.Pool == nil {
+		return
+	}
+	if _, err := t.Pool.Exec(ctx, "TRUNCATE TABLE urls RESTART IDENTITY"); err != nil {
+		return
+	}
 }
 
 // Teardown closes connections and terminates container
@@ -69,7 +80,9 @@ func (t *TestDB) Teardown(ctx context.Context) {
 		t.Pool.Close()
 	}
 	if t.container != nil {
-		t.container.Terminate(ctx)
+		if err := t.container.Terminate(ctx); err != nil {
+			return
+		}
 	}
 }
 
