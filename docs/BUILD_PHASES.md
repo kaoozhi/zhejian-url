@@ -52,44 +52,56 @@ Verify code quality and run tests automatically on every push and pull request.
 
 ---
 
-## Phase 3: Build & Deployment (CD)
+## Phase 3: Build & Deployment (CD) ✅ COMPLETED
 
 ### Objective
-Build container images and deploy to staging with Toxiproxy for chaos testing from day one.
+Production-ready containerization with automated database migrations.
 
-### Tasks
-1. **Build Pipeline**
-   - Build container images with `docker buildx`
-   - Tag with commit SHA (immutable tags)
-   - Push to container registry (GHCR/ECR)
+### Implementation
 
-2. **Infrastructure as Code**
-   - `docker-compose.yml` for local dev
-   - `docker-compose.prod.yml` for production-like deployment
-   - `docker-compose.chaos.yml` with Toxiproxy integration
+1. **Init Container Pattern** ✅
+   - Migration service runs golang-migrate before gateway starts
+   - `migrations/Dockerfile` + `migrate-entrypoint.sh`
+   - Generic SQL file copying: `COPY *.sql ./`
+   - Down migrations for rollback capability
 
-3. **Database Migrations**
-   - Migration tool setup (golang-migrate or similar)
-   - Idempotent migrations with locking
-   - Run migrations before service deployment
+2. **Multi-Stage Dockerfiles** ✅
+   - Gateway: Go builder + Alpine runtime (static binary)
+   - Built-in health check: `curl -f /health`
+   - Optimized image sizes
 
-4. **Health Checks & Deployment Safety**
-   - Readiness probe: `/health/ready` (checks DB connection)
-   - Liveness probe: `/health/live` (simple ping)
-   - Rolling deployment strategy
-   - Rollback capability
+3. **Docker Compose V2 Production** ✅
+   - `docker-compose.prod.yml` with service dependencies
+   - Startup flow: Postgres (healthy) → Migrations (completed) → Gateway
+   - Environment config via `.env`
+   - PostgreSQL persistent volumes
 
-5. **Toxiproxy Integration** 🎯
-   - Proxy all external dependencies (Postgres, Redis)
-   - Chaos testing endpoints ready from deployment
-   - Baseline failure injection scripts
+4. **Migration Strategy** ✅
+   - golang-migrate v4.19.1
+   - Idempotent migrations with IF NOT EXISTS
+   - Schema tracking via `schema_migrations` table
 
 ### Deliverables
-- `.github/workflows/cd.yml` (build → push → deploy)
-- `infrastructure/` directory with all manifests
-- `Makefile` with deploy targets
-- Toxiproxy routing configured
-- Health check endpoints implemented
+- ✅ `services/gateway/Dockerfile`
+- ✅ `migrations/Dockerfile` + `migrate-entrypoint.sh`
+- ✅ `docker-compose.prod.yml` (Docker Compose V2)
+- ✅ `migrations/schema/000001_init.down.sql`
+- ✅ Working deployment with health checks
+
+### Verified Results
+```bash
+# Services start in correct order
+postgres → migrations (exited 0) → gateway (running)
+
+# Health endpoint works
+curl http://localhost:8080/health
+# {"status":"ok"}
+```
+
+### Next Steps
+- [ ] CI/CD pipeline for automated builds
+- [ ] Toxiproxy integration for chaos testing
+- [ ] Container registry (GHCR/ECR)
 
 ### Docker Compose Structure
 ```yaml
