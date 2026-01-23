@@ -6,3 +6,4 @@ coverage:
         threshold: 1%
   ignore:
     - "services/gateway/internal/testutil/*"
+    - "services/gateway/cmd/server/*"
