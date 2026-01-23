@@ -25,16 +25,21 @@ jobs:
         working-directory: services/gateway
         run: go build -v ./...
 
-      - name: Test
-        working-directory: services/gateway
-        run: go test -v ./...
-      
       - name: Check
         working-directory: services/gateway
         run: |
           go vet ./...
           gofmt -s -w .
           git diff --exit-code
+
+      - name: Test
+        working-directory: services/gateway
+        run: go test -v -coverprofile=coverage.txt ./...
+
+      - name: Upload results to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
         
       - name: Linter
         uses: golangci/golangci-lint-action@v6
