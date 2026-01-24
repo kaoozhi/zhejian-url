@@ -81,48 +81,36 @@ Production-ready containerization with automated database migrations.
    - Idempotent migrations with IF NOT EXISTS
    - Schema tracking via `schema_migrations` table
 
+5. **CI/CD Production Build Testing** ✅
+   - GitHub Actions workflow for automated production build verification
+   - Docker Compose build and startup verification
+   - Migration completion verification
+   - Health endpoint smoke test with retry logic
+   - Automatic cleanup with volume removal
+
 ### Deliverables
 - ✅ `services/gateway/Dockerfile`
 - ✅ `migrations/Dockerfile` + `migrate-entrypoint.sh`
 - ✅ `docker-compose.prod.yml` (Docker Compose V2)
 - ✅ `migrations/schema/000001_init.down.sql`
+- ✅ `.github/workflows/production.yml` (CI/CD build testing)
 - ✅ Working deployment with health checks
 
 ### Verified Results
 ```bash
-# Services start in correct order
+# Local: Services start in correct order
 postgres → migrations (exited 0) → gateway (running)
 
-# Health endpoint works
+# Local: Health endpoint works
 curl http://localhost:8080/health
 # {"status":"ok"}
+
+# CI/CD: Workflow validates
+# ✓ Docker Compose builds successfully
+# ✓ Migrations complete successfully (checks for "Migrations completed!" log)
+# ✓ Gateway health endpoint responds
+# ✓ Automatic cleanup
 ```
-
-### Next Steps
-- [ ] CI/CD pipeline for automated builds
-- [ ] Toxiproxy integration for chaos testing
-- [ ] Container registry (GHCR/ECR)
-
-### Docker Compose Structure
-```yaml
-# docker-compose.chaos.yml
-services:
-  toxiproxy:
-    image: ghcr.io/shopify/toxiproxy
-    ports: ["8474:8474"]
-    
-  gateway:
-    environment:
-      POSTGRES_URL: toxiproxy:5432  # Route through proxy
-      REDIS_URL: toxiproxy:6379
-    depends_on: [toxiproxy]
-```
-
-### Key Learning
-- Deployment automation
-- Immutable infrastructure
-- Health check patterns
-- Chaos engineering infrastructure
 
 ---
 
@@ -305,13 +293,19 @@ k6 run --vus 1000 tests/clicks-async.js
 
 ---
 
-## Phase 7: Resilience Patterns
+## Phase 7: Resilience Patterns & Chaos Testing
 
 ### Objective
-Add circuit breakers, retries, and comprehensive failure handling.
+Add circuit breakers, retries, comprehensive failure handling, and Toxiproxy chaos testing infrastructure.
 
 ### Tasks
-1. **Circuit Breakers** 🎯
+1. **Toxiproxy Integration** 🎯
+   - `docker-compose.chaos.yml` with Toxiproxy service
+   - Proxy configuration for all external dependencies (Postgres, Redis, RabbitMQ, Rate Limiter)
+   - Toxiproxy CLI setup for failure injection
+   - Route all service calls through Toxiproxy proxies
+
+2. **Circuit Breakers** 🎯
    - Wrap all external service calls:
      - PostgreSQL queries
      - Redis operations
@@ -320,17 +314,17 @@ Add circuit breakers, retries, and comprehensive failure handling.
    - Configurable thresholds (errors, timeout, half-open)
    - Metrics for circuit breaker state
 
-2. **Retry Logic**
+3. **Retry Logic**
    - Exponential backoff with jitter
    - Configurable retry counts per service
    - Idempotency considerations (use request IDs)
 
-3. **Backpressure Handling**
+4. **Backpressure Handling**
    - Request queue limits (reject with 429 if full)
    - Load shedding strategies (drop low-priority requests)
    - Graceful degradation levels
 
-4. **Concrete Chaos Scenarios** 🎯
+5. **Concrete Chaos Scenarios** 🎯
 
    **Scenario 1: PostgreSQL Failure**
    ```bash
@@ -410,11 +404,13 @@ Add circuit breakers, retries, and comprehensive failure handling.
    ```
 
 ### Deliverables
+- `docker-compose.chaos.yml` with Toxiproxy setup
 - Circuit breakers on all external dependencies
 - Retry logic with configurable backoff
 - 5 documented chaos scenarios with verification steps
 - Health check aggregating all dependencies
 - Grafana dashboard showing circuit breaker states
+- Chaos testing scripts (`scripts/chaos-test.sh`)
 
 ### Chaos Testing Automation
 ```bash
@@ -502,6 +498,8 @@ Validate system performance under realistic load.
 
 ### Objective
 Comprehensive chaos testing with automated scenarios and visual dashboards.
+
+**Prerequisites:** Toxiproxy infrastructure and basic chaos scenarios from Phase 7.
 
 ### Tasks
 1. **Automated Chaos Scenarios**
@@ -638,11 +636,11 @@ Create portfolio-quality documentation and demo materials.
 ```
 Week 1-2:  ✅ Phase 1 - Core Foundation
 Week 2-3:  ✅ Phase 2 - CI/Test Automation
-Week 3-4:  Phase 3 - Build & Deployment + Toxiproxy
+Week 3-4:  ✅ Phase 3 - Build & Deployment (CD)
 Week 4-5:  Phase 4 - Caching + Basic Observability
 Week 5-6:  Phase 5 - Rust Rate Limiter + gRPC
 Week 6-7:  Phase 6 - RabbitMQ Click Analytics
-Week 7:    Phase 7 - Resilience Patterns
+Week 7:    Phase 7 - Resilience Patterns + Toxiproxy
 Week 8:    Phase 8 - Load Testing
 Week 9-10: Phase 9 - Chaos Engineering (Extended)
 Week 11:   Phase 10 - Observability Expansion
@@ -654,7 +652,7 @@ Week 12:   Phase 11 - Documentation & Polish
 ## Key Changes from Original Plan
 
 1. **Moved CD (Phase 3) before complex features** - Deploy infrastructure early
-2. **Integrated Toxiproxy from Phase 3** - Chaos testing infrastructure ready from start
+2. **Toxiproxy deferred to Phase 7** - Integrated with resilience patterns when there are multiple services to test
 3. **Focused RabbitMQ on click analytics** - Clear, demonstrable use case
 4. **Made link expiration optional** - Nice to have, not critical path
 5. **Extended chaos testing (Phase 9)** - More time for comprehensive scenarios
