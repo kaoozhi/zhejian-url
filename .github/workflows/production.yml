@@ -38,9 +38,13 @@ jobs:
 
       - name: Verify migrations
         run: |
-          docker compose -f docker-compose.prod.yml logs migrations
-          if ! docker compose -f docker-compose.prod.yml ps migrations | grep -q "exited (0)"; then
-            echo "Migration failed"
+          LOGS=$(docker compose -f docker-compose.prod.yml logs migrations)
+          echo "$LOGS"
+
+          if echo "$LOGS" | grep -q "Migrations completed!"; then
+            echo "✓ Migrations completed successfully"
+          else
+            echo "Migration failed - 'Migrations completed!' not found in logs"
             exit 1
           fi
 
