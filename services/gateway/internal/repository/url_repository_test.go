@@ -11,7 +11,10 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
 )
 
-var testDB *testutil.TestDB
+var (
+	testDB    *testutil.TestDB
+	testCache *testutil.TestCache
+)
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
@@ -22,10 +25,16 @@ func TestMain(m *testing.M) {
 		panic("failed to setup test database: " + err.Error())
 	}
 
+	testCache, err = testutil.SetupTestCache(ctx)
+	if err != nil {
+		panic("failed to setup test cache: " + err.Error())
+	}
+
 	// Run tests
 	code := m.Run()
 
 	// Cleanup
+	testCache.Teardown(ctx)
 	testDB.Teardown(ctx)
 	os.Exit(code)
 }

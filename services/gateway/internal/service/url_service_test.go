@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	testDB  *testutil.TestDB
-	testCfg *config.Config
+	testDB    *testutil.TestDB
+	testCache *testutil.TestCache
+	testCfg   *config.Config
 )
 
 func TestMain(m *testing.M) {
@@ -32,18 +33,24 @@ func TestMain(m *testing.M) {
 		panic("failed to setup test database: " + err.Error())
 	}
 
+	testCache, err = testutil.SetupTestCache(ctx)
+	if err != nil {
+		panic("failed to setup test cache: " + err.Error())
+	}
+
 	// Run tests
 	code := m.Run()
 
 	// Cleanup
+	testCache.Teardown(ctx)
 	testDB.Teardown(ctx)
 	os.Exit(code)
 }
 
 func TestURLService_CreateShortURL(t *testing.T) {
 	ctx := context.Background()
-
-	repo := repository.NewURLRepository(testDB.Pool)
+	db := repository.NewURLRepository(testDB.Pool)
+	repo := repository.NewCachedURLRepository(db, nil, 0)
 	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("creates short URL successfully", func(t *testing.T) {
@@ -190,7 +197,8 @@ func TestURLService_CreateShortURL(t *testing.T) {
 
 func TestURLService_GetURL(t *testing.T) {
 	ctx := context.Background()
-	repo := repository.NewURLRepository(testDB.Pool)
+	db := repository.NewURLRepository(testDB.Pool)
+	repo := repository.NewCachedURLRepository(db, nil, 0)
 	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("retrieves existing URL successfully", func(t *testing.T) {
@@ -275,7 +283,8 @@ func TestURLService_GetURL(t *testing.T) {
 
 func TestURLService_Redirect(t *testing.T) {
 	ctx := context.Background()
-	repo := repository.NewURLRepository(testDB.Pool)
+	db := repository.NewURLRepository(testDB.Pool)
+	repo := repository.NewCachedURLRepository(db, nil, 0)
 	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("redirects to original URL successfully", func(t *testing.T) {
@@ -343,7 +352,8 @@ func TestURLService_Redirect(t *testing.T) {
 
 func TestURLService_DeleteURL(t *testing.T) {
 	ctx := context.Background()
-	repo := repository.NewURLRepository(testDB.Pool)
+	db := repository.NewURLRepository(testDB.Pool)
+	repo := repository.NewCachedURLRepository(db, nil, 0)
 	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("deletes existing URL successfully", func(t *testing.T) {
@@ -427,7 +437,8 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
 
-	repo := repository.NewURLRepository(testDB.Pool)
+	db := repository.NewURLRepository(testDB.Pool)
+	repo := repository.NewCachedURLRepository(db, nil, 0)
 	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("complete URL lifecycle", func(t *testing.T) {
@@ -589,6 +600,205 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 		// Verify all 5 URLs were created
 		if len(shortCodeMap) != len(originalURLs) {
 			t.Errorf("Expected %d URLs to be created, got %d", len(originalURLs), len(shortCodeMap))
+		}
+	})
+}
+
+func TestURLService_WithCache(t *testing.T) {
+	ctx := context.Background()
+	cacheTTL := 5 * time.Minute
+
+	t.Run("caches URL on first read", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+		testCache.Cleanup(ctx)
+
+		dbRepo := repository.NewURLRepository(testDB.Pool)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
+		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+
+		// Create a URL
+		createReq := &model.CreateURLRequest{
+			URL:         "https://example.com/cache-test",
+			CustomAlias: "cache-test",
+		}
+		_, err := service.CreateShortURL(ctx, createReq)
+		if err != nil {
+			t.Fatalf("Failed to create URL: %v", err)
+		}
+
+		// First read - should cache the result
+		_, err = service.GetURL(ctx, "cache-test")
+		if err != nil {
+			t.Fatalf("Failed to get URL: %v", err)
+		}
+
+		// Verify it's in cache
+		cacheKey := "url:cache-test"
+		exists, err := testCache.Client.Exists(ctx, cacheKey).Result()
+		if err != nil {
+			t.Fatalf("Failed to check cache: %v", err)
+		}
+		if exists != 1 {
+			t.Error("Expected URL to be cached after first read")
+		}
+	})
+
+	t.Run("serves from cache on subsequent reads", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+		testCache.Cleanup(ctx)
+
+		dbRepo := repository.NewURLRepository(testDB.Pool)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
+		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+
+		// Create and read a URL to cache it
+		createReq := &model.CreateURLRequest{
+			URL:         "https://example.com/cache-hit",
+			CustomAlias: "cache-hit",
+		}
+		_, err := service.CreateShortURL(ctx, createReq)
+		if err != nil {
+			t.Fatalf("Failed to create URL: %v", err)
+		}
+
+		// First read to populate cache
+		_, err = service.GetURL(ctx, "cache-hit")
+		if err != nil {
+			t.Fatalf("Failed to get URL: %v", err)
+		}
+
+		// Delete from DB directly (bypass cache)
+		_, err = testDB.Pool.Exec(ctx, "DELETE FROM urls WHERE short_code = $1", "cache-hit")
+		if err != nil {
+			t.Fatalf("Failed to delete from DB: %v", err)
+		}
+
+		// Second read should still succeed (served from cache)
+		urlResp, err := service.GetURL(ctx, "cache-hit")
+		if err != nil {
+			t.Fatalf("Expected cache hit, got error: %v", err)
+		}
+
+		if urlResp.OriginalURL != "https://example.com/cache-hit" {
+			t.Errorf("Expected cached URL, got %s", urlResp.OriginalURL)
+		}
+	})
+
+	t.Run("invalidates cache on delete", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+		testCache.Cleanup(ctx)
+
+		dbRepo := repository.NewURLRepository(testDB.Pool)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
+		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+
+		// Create and cache a URL
+		createReq := &model.CreateURLRequest{
+			URL:         "https://example.com/cache-delete",
+			CustomAlias: "cache-delete",
+		}
+		_, err := service.CreateShortURL(ctx, createReq)
+		if err != nil {
+			t.Fatalf("Failed to create URL: %v", err)
+		}
+
+		// Read to ensure it's cached
+		_, err = service.GetURL(ctx, "cache-delete")
+		if err != nil {
+			t.Fatalf("Failed to get URL: %v", err)
+		}
+
+		// Verify it's cached
+		cacheKey := "url:cache-delete"
+		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
+		if exists != 1 {
+			t.Fatal("Expected URL to be cached before delete")
+		}
+
+		// Delete via service (should invalidate cache)
+		err = service.DeleteURL(ctx, "cache-delete")
+		if err != nil {
+			t.Fatalf("Failed to delete URL: %v", err)
+		}
+
+		// Verify cache is invalidated
+		exists, _ = testCache.Client.Exists(ctx, cacheKey).Result()
+		if exists != 0 {
+			t.Error("Expected cache to be invalidated after delete")
+		}
+	})
+
+	t.Run("caches negative result for non-existent URL", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+		testCache.Cleanup(ctx)
+
+		dbRepo := repository.NewURLRepository(testDB.Pool)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
+		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+
+		// Try to get a non-existent URL
+		_, err := service.GetURL(ctx, "nonexistent-cache")
+		if err == nil {
+			t.Fatal("Expected error for non-existent URL")
+		}
+
+		// Verify negative result is cached
+		cacheKey := "url:nonexistent-cache"
+		cached, err := testCache.Client.Get(ctx, cacheKey).Result()
+		if err != nil {
+			t.Fatalf("Expected negative cache entry, got error: %v", err)
+		}
+
+		if cached != "__NOT_FOUND__" {
+			t.Errorf("Expected sentinel value '__NOT_FOUND__', got %s", cached)
+		}
+	})
+
+	t.Run("create overwrites negative cache", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+		testCache.Cleanup(ctx)
+
+		dbRepo := repository.NewURLRepository(testDB.Pool)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
+		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+
+		// Try to get a non-existent URL (triggers negative caching)
+		_, err := service.GetURL(ctx, "overwrite-neg")
+		if err == nil {
+			t.Fatal("Expected error for non-existent URL")
+		}
+
+		// Verify negative cache exists
+		cacheKey := "url:overwrite-neg"
+		cached, _ := testCache.Client.Get(ctx, cacheKey).Result()
+		if cached != "__NOT_FOUND__" {
+			t.Fatalf("Expected negative cache entry, got %s", cached)
+		}
+
+		// Now create the URL
+		createReq := &model.CreateURLRequest{
+			URL:         "https://example.com/overwrite-neg",
+			CustomAlias: "overwrite-neg",
+		}
+		_, err = service.CreateShortURL(ctx, createReq)
+		if err != nil {
+			t.Fatalf("Failed to create URL: %v", err)
+		}
+
+		// The negative cache should be overwritten
+		cached, _ = testCache.Client.Get(ctx, cacheKey).Result()
+		if cached == "__NOT_FOUND__" {
+			t.Error("Expected negative cache to be overwritten by create")
+		}
+
+		// Should be able to get the URL now
+		urlResp, err := service.GetURL(ctx, "overwrite-neg")
+		if err != nil {
+			t.Fatalf("Expected URL to exist after create, got error: %v", err)
+		}
+
+		if urlResp.OriginalURL != "https://example.com/overwrite-neg" {
+			t.Errorf("Expected correct URL, got %s", urlResp.OriginalURL)
 		}
 	})
 }
