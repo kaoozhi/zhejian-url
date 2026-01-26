@@ -1,0 +1,66 @@
+name: Docker Compose
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create .env file
+        run: |
+          cat > .env << EOF
+          DB_HOST=postgres
+          DB_PORT=5432
+          DB_USER=zhejian
+          DB_PASSWORD=zhejian_secret
+          DB_NAME=urlshortener
+          DB_SSLMODE=disable
+          EOF
+
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@05da55b2bb8a5a759d1c4732095044bd9018c050 # v2.4.3
+        with:
+            compose-file: "./docker-compose.prod.yml"
+            up-flags: "-d"
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for services..."
+          sleep 15
+          docker compose -f docker-compose.prod.yml ps
+
+      - name: Verify migrations
+        run: |
+          LOGS=$(docker compose -f docker-compose.prod.yml logs migrations)
+          echo "$LOGS"
+
+          if echo "$LOGS" | grep -q "Migrations completed!"; then
+            echo "✓ Migrations completed successfully"
+          else
+            echo "Migration failed - 'Migrations completed!' not found in logs"
+            exit 1
+          fi
+
+      - name: Smoke test
+        run: |
+          for i in {1..10}; do
+            if curl --fail --silent http://localhost:8080/health; then
+              echo "✓ Health check passed"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Health check failed"
+          docker compose -f docker-compose.prod.yml logs gateway
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.prod.yml down -v

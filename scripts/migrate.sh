@@ -8,7 +8,7 @@ set -e
 DB_CONTAINER="zhejian-postgres"
 DB_USER="zhejian"
 DB_NAME="urlshortener"
-MIGRATIONS_DIR="$(dirname "$0")/../migrations"
+MIGRATIONS_DIR="$(dirname "$0")/../migrations/schema"
 
 echo "🔄 Running database migrations..."
 

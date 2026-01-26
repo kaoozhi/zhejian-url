@@ -88,7 +88,7 @@ func (t *TestDB) Teardown(ctx context.Context) {
 
 func runMigrations(connString string) error {
 	_, filename, _, _ := runtime.Caller(0)
-	migrationsPath := filepath.Join(filepath.Dir(filename), "../../../../migrations")
+	migrationsPath := filepath.Join(filepath.Dir(filename), "../../../../migrations/schema")
 
 	m, err := migrate.New(
 		"file://"+migrationsPath,
