@@ -14,6 +14,7 @@ type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	App      AppConfig
+	Cache    CacheConfig
 }
 
 // ServerConfig holds HTTP server configuration
@@ -37,6 +38,14 @@ type DatabaseConfig struct {
 	// MaxConnIdle time.Duration
 }
 
+// Redis Caching Layer configuration
+type CacheConfig struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+}
+
 // AppConfig holds application-specific configuration
 type AppConfig struct {
 	BaseURL          string // Base URL for generating short links
@@ -58,7 +67,7 @@ func Load() (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
-			Port:     getEnv("DB_PORT", "5434"),
+			Port:     getEnv("DB_PORT", "5432"),
 			User:     getEnv("DB_USER", "zhejian"),
 			Password: getEnv("DB_PASSWORD", "zhejian_secret"),
 			DBName:   getEnv("DB_NAME", "urlshortener"),
@@ -67,6 +76,11 @@ func Load() (*Config, error) {
 			// MinConns:    2,
 			// MaxConnLife: time.Hour,
 			// MaxConnIdle: 30 * time.Minute,
+		},
+		Cache: CacheConfig{
+			Host:     getEnv("RDB_HOST", "localhost"),
+			Port:     getEnv("RDB_PORT", "6379"),
+			Password: getEnv("RDB_PASSWORD", "zhejian"),
 		},
 		App: AppConfig{
 			BaseURL:          getEnv("BASE_URL", "http://localhost:8080"),
@@ -78,9 +92,18 @@ func Load() (*Config, error) {
 	}, nil
 }
 
+type ConnectionInterface interface {
+	ConnectionString() string
+}
+
 // ConnectionString returns the PostgreSQL connection string
 func (d *DatabaseConfig) ConnectionString() string {
 	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, d.Host, d.Port, d.DBName, d.SSLMode)
+	return connectionString
+}
+
+func (c *CacheConfig) ConnectionString() string {
+	connectionString := fmt.Sprintf("redis://%s:%s@%s:%s/0", c.User, c.Password, c.Host, c.Port)
 	return connectionString
 }
 

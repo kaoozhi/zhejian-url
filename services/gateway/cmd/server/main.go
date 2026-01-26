@@ -25,12 +25,20 @@ func main() {
 	ctx := context.Background()
 
 	// Connect to database
-	connectionString := cfg.Database.ConnectionString()
-	db, err := repository.NewPostgresPool(ctx, connectionString)
+	DBconnectionString := cfg.Database.ConnectionString()
+	db, err := repository.NewPostgresPool(ctx, DBconnectionString)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+
+	// Connect to cache
+	RDBconnectionString := cfg.Cache.ConnectionString()
+	rdb, err := repository.NewCacheClient(ctx, RDBconnectionString)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer rdb.Close()
 
 	// Verify database connectivity
 	if err := db.Ping(ctx); err != nil {
