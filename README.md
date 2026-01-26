@@ -1,3 +1,7 @@
+[![Go](https://github.com/kaoozhi/zhejian-url/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/kaoozhi/zhejian-url/actions/workflows/go.yml)
+[![Docker Compose](https://github.com/kaoozhi/zhejian-url/actions/workflows/production.yml/badge.svg)](https://github.com/kaoozhi/zhejian-url/actions/workflows/production.yml)
+[![codecov](https://codecov.io/gh/kaoozhi/zhejian-url/branch/main/graph/badge.svg?token=XPQ70FTF7M)](https://codecov.io/gh/kaoozhi/zhejian-url)
+
 # Zhejian URL Shortener
 
 A production-grade URL shortener built to showcase high-concurrency backend engineering and distributed systems design.
