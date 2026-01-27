@@ -8,6 +8,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	redisTC "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/zhejian/url-shortener/gateway/internal/infra"
 )
 
 // TestCache holds test cache resources
@@ -37,16 +38,8 @@ func SetupTestCache(ctx context.Context) (*TestCache, error) {
 		return nil, err
 	}
 
-	opt, err := redis.ParseURL(connString)
+	client, err := infra.NewCacheClient(ctx, connString)
 	if err != nil {
-		if terr := container.Terminate(ctx); terr != nil {
-			err = terr
-		}
-		return nil, err
-	}
-
-	client := redis.NewClient(opt)
-	if err := client.Ping(ctx).Err(); err != nil {
 		if terr := container.Terminate(ctx); terr != nil {
 			err = terr
 		}
@@ -62,6 +55,11 @@ func (t *TestCache) Cleanup(ctx context.Context) {
 		return
 	}
 	t.Client.FlushDB(ctx)
+}
+
+// Container returns the underlying redis container for direct access.
+func (t *TestCache) Container() *redisTC.RedisContainer {
+	return t.container
 }
 
 // Teardown closes connections and terminates container

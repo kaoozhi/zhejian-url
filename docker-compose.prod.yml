@@ -23,7 +23,7 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
-  
+
   gateway:
     build: ./services/gateway
     environment:

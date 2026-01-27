@@ -13,6 +13,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/zhejian/url-shortener/gateway/internal/infra"
 )
 
 // TestDB holds test database resources
@@ -53,7 +54,7 @@ func SetupTestDB(ctx context.Context) (*TestDB, error) {
 		return nil, err
 	}
 
-	pool, err := pgxpool.New(ctx, connString)
+	pool, err := infra.NewPostgresPool(ctx, connString)
 	if err != nil {
 		if terr := container.Terminate(ctx); terr != nil {
 			err = terr
@@ -72,6 +73,11 @@ func (t *TestDB) Cleanup(ctx context.Context) {
 	if _, err := t.Pool.Exec(ctx, "TRUNCATE TABLE urls RESTART IDENTITY"); err != nil {
 		return
 	}
+}
+
+// Container returns the underlying postgres container for direct access.
+func (t *TestDB) Container() *postgres.PostgresContainer {
+	return t.container
 }
 
 // Teardown closes connections and terminates container

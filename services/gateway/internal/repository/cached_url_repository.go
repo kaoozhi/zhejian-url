@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -36,17 +37,9 @@ func NewCachedURLRepository(db *URLRepository, cache *redis.Client, ttl time.Dur
 }
 
 // NewCacheClient creates a new Redis client and verifies connectivity.
+// Deprecated: Use infra.NewCacheClient directly.
 func NewCacheClient(ctx context.Context, connString string) (*redis.Client, error) {
-	opt, err := redis.ParseURL(connString)
-	if err != nil {
-		return nil, err
-	}
-	rdb := redis.NewClient(opt)
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		rdb.Close()
-		return nil, err
-	}
-	return rdb, nil
+	return infra.NewCacheClient(ctx, connString)
 }
 
 // GetByCode retrieves a URL by short code using cache-aside pattern.

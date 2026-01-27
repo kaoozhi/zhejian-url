@@ -3,11 +3,11 @@ package repository
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -113,31 +113,8 @@ func (r *URLRepository) Delete(ctx context.Context, code string) error {
 // 	return exists, nil
 // }
 
-// NewPostgresPool creates a new PostgreSQL connection pool
+// NewPostgresPool creates a new PostgreSQL connection pool.
+// Deprecated: Use infra.NewPostgresPool directly.
 func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
-	// Create a pgx connection pool with sensible defaults for the
-	// application. Parse config from the provided connection string.
-	config, err := pgxpool.ParseConfig(connString)
-	if err != nil {
-		return nil, err
-	}
-	// - Configure pool settings (max conns, timeouts, etc.)
-	// Configure pool settings
-	config.MaxConns = 10
-	config.MinConns = 2
-	config.MaxConnLifetime = time.Hour
-	config.MaxConnIdleTime = 30 * time.Minute
-
-	// Create the pool
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	// Test the connection
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	// - Return the pool
-	return pool, nil
+	return infra.NewPostgresPool(ctx, connString)
 }
