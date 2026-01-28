@@ -7,7 +7,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -100,21 +99,3 @@ func (r *URLRepository) Delete(ctx context.Context, code string) error {
 // 	// - UPDATE urls SET click_count = click_count + 1 WHERE short_code = $1
 // 	return nil
 // }
-
-// CodeExists checks if a short code already exists
-// func (r *URLRepository) CodeExists(ctx context.Context, code string) (bool, error) {
-// 	// Check whether a short code exists in the database.
-// 	var exists bool
-// 	query := `SELECT EXISTS(SELECT 1 FROM urls WHERE short_code = $1)`
-// 	err := r.db.QueryRow(ctx, query, code).Scan(&exists)
-// 	if err != nil {
-// 		return false, err
-// 	}
-// 	return exists, nil
-// }
-
-// NewPostgresPool creates a new PostgreSQL connection pool.
-// Deprecated: Use infra.NewPostgresPool directly.
-func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
-	return infra.NewPostgresPool(ctx, connString)
-}

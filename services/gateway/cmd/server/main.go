@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/zhejian/url-shortener/gateway/internal/config"
-	"github.com/zhejian/url-shortener/gateway/internal/repository"
+	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 )
 
@@ -26,7 +26,7 @@ func main() {
 
 	// Connect to database
 	DBconnectionString := cfg.Database.ConnectionString()
-	db, err := repository.NewPostgresPool(ctx, DBconnectionString)
+	db, err := infra.NewPostgresPool(ctx, DBconnectionString)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -34,7 +34,7 @@ func main() {
 
 	// Connect to cache
 	cacheConnString := cfg.Cache.ConnectionString()
-	cache, err := repository.NewCacheClient(ctx, cacheConnString)
+	cache, err := infra.NewCacheClient(ctx, cacheConnString)
 	if err != nil {
 		log.Fatalf("Failed to connect to cache: %v", err)
 	}
