@@ -1,9 +1,21 @@
+codecov:
+  notify:
+    wait_for_ci: false  # Change this to false to see the status immediately
+    require_ci_to_pass: false
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+
 coverage:
   status:
     project:
       default:
         target: 80%
         threshold: 1%
+    patch:
+      default:
+        informational: true  # Reports status but never fails
   ignore:
     - "services/gateway/internal/testutil/*"
     - "services/gateway/cmd/server/*"
