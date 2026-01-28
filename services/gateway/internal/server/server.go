@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"github.com/zhejian/url-shortener/gateway/internal/api"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
@@ -14,8 +15,9 @@ import (
 
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // This is useful for testing where you don't need the full HTTP server.
-func NewRouter(cfg *config.Config, db *pgxpool.Pool) *gin.Engine {
-	urlRepo := repository.NewURLRepository(db)
+func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client) *gin.Engine {
+	baseRepo := repository.NewURLRepository(db)
+	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL)
 	urlService := service.NewURLService(urlRepo, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
 	handler := api.NewHandler(urlService, db)
 	return handler.SetupRouter()
@@ -23,8 +25,8 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool) *gin.Engine {
 
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
-func NewServer(cfg *config.Config, db *pgxpool.Pool) *http.Server {
-	router := NewRouter(cfg, db)
+func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client) *http.Server {
+	router := NewRouter(cfg, db, cache)
 
 	return &http.Server{
 		Addr:         ":" + cfg.Server.Port,
