@@ -46,6 +46,9 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       DB_SSLMODE: ${DB_SSLMODE}
+      CACHE_HOST: ${CACHE_HOST}
+      CACHE_PORT: ${CACHE_PORT}
+      CACHE_TTL: ${CACHE_TTL}
     ports:
       - "8080:8080"
     depends_on:
