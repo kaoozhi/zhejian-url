@@ -16,12 +16,14 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
-	testDB    *testutil.TestDB
-	testCache *testutil.TestCache
-	testCfg   *config.Config
+	testDB           *testutil.TestDB
+	testCache        *testutil.TestCache
+	testCfg          *config.Config
+	testRequestGroup singleflight.Group
 )
 
 // TestMain sets up the test environment once for all tests
@@ -58,7 +60,7 @@ func TestMain(m *testing.M) {
 
 func setupTestServer() *httptest.Server {
 	gin.SetMode(gin.TestMode)
-	router := server.NewRouter(testCfg, testDB.Pool, testCache.Client)
+	router := server.NewRouter(testCfg, testDB.Pool, testCache.Client, &testRequestGroup)
 	srv := httptest.NewServer(router)
 	// ensure handlers that build absolute URLs use the test server base
 	testCfg.App.BaseURL = srv.URL

@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -381,6 +383,65 @@ func TestCachedURLRepository_CacheTTL(t *testing.T) {
 		// TTL should be close to cacheTTL (within 1 second tolerance)
 		if ttl < cacheTTL-time.Second || ttl > cacheTTL {
 			t.Errorf("expected TTL close to %v, got %v", cacheTTL, ttl)
+		}
+	})
+}
+
+type countingRepository struct {
+	URLRepositoryInterface
+	getByCodeCount atomic.Int32
+}
+
+func (c *countingRepository) GetByCode(ctx context.Context, code string) (*model.URL, error) {
+	c.getByCodeCount.Add(1)
+	return c.URLRepositoryInterface.GetByCode(ctx, code)
+}
+
+func TestCachedURLRepository_SingleFlight(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("singleflight deduplicates concurrent DB queries", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+		testCache.Cleanup(ctx)
+
+		cacheTTL := 10 * time.Minute
+		dbRepo := NewURLRepository(testDB.Pool)
+		counter := &countingRepository{URLRepositoryInterface: dbRepo}
+		repo := NewCachedURLRepository(counter, testCache.Client, cacheTTL)
+
+		// Insert test data (cache is cold)
+		id := uuid.New()
+		testDB.Pool.Exec(ctx, `
+			INSERT INTO urls (id, short_code, original_url, created_at)
+			VALUES ($1, $2, $3, $4)
+		`, id, "sftest", "https://example.com/sftest", time.Now())
+
+		// Launch N concurrent requests for the same code against a cold cache
+		const n = 10
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make([]error, n)
+
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				<-start // wait for all goroutines to be ready
+				_, errs[idx] = repo.GetByCode(ctx, "sftest")
+			}(i)
+		}
+
+		close(start) // release all goroutines simultaneously
+		wg.Wait()
+
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("goroutine %d got error: %v", i, err)
+			}
+		}
+
+		if val := counter.getByCodeCount.Load(); val != 1 {
+			t.Errorf("expected 1 DB query (singleflight), got %d", val)
 		}
 	})
 }
