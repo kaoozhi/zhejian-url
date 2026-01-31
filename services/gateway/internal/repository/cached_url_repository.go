@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/sony/gobreaker"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -21,6 +22,7 @@ type CachedURLRepository struct {
 	cache        *redis.Client
 	ttl          time.Duration
 	requestGroup *singleflight.Group
+	cacheCB      *gobreaker.CircuitBreaker
 }
 
 // URLRepositoryInterface defines the contract for URL storage operations.
@@ -33,13 +35,58 @@ type URLRepositoryInterface interface {
 // notFoundSentinel is cached to prevent repeated DB queries for non-existent URLs.
 var notFoundSentinel = []byte("__NOT_FOUND__")
 
+// CBSettings holds circuit breaker configuration for any external dependency.
+type CBSettings struct {
+	MaxRequests         uint32
+	Interval            time.Duration
+	Timeout             time.Duration
+	ConsecutiveFailures uint32
+}
+
+// DefaultCBSettings returns production circuit breaker defaults.
+func DefaultCBSettings() CBSettings {
+	return CBSettings{
+		MaxRequests:         3,
+		Interval:            10 * time.Second,
+		Timeout:             30 * time.Second,
+		ConsecutiveFailures: 5,
+	}
+}
+
+// CachedURLRepositoryOptions holds optional configuration.
+type CachedURLRepositoryOptions struct {
+	CacheCB *CBSettings
+}
+
 // NewCachedURLRepository creates a new cached URL repository.
-func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl time.Duration) *CachedURLRepository {
+func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl time.Duration, opts ...CachedURLRepositoryOptions) *CachedURLRepository {
+	cb := DefaultCBSettings()
+	if len(opts) > 0 && opts[0].CacheCB != nil {
+		cb = *opts[0].CacheCB
+	}
+
 	return &CachedURLRepository{
 		db:           db,
 		cache:        cache,
 		ttl:          ttl,
-		requestGroup: &singleflight.Group{}}
+		requestGroup: &singleflight.Group{},
+		cacheCB: gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name:        "redis",
+			MaxRequests: cb.MaxRequests,
+			Interval:    cb.Interval,
+			Timeout:     cb.Timeout,
+			ReadyToTrip: func(counts gobreaker.Counts) bool {
+				return counts.ConsecutiveFailures >= cb.ConsecutiveFailures
+			},
+			IsSuccessful: func(err error) bool {
+				// redis.Nil is a cache miss, not an infrastructure failure.
+				return err == nil || err == redis.Nil
+			},
+			OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+				log.Printf("circuit breaker [%s]: %s → %s", name, from, to)
+			},
+		}),
+	}
 }
 
 // GetByCode retrieves a URL by short code using cache-aside pattern.
@@ -50,7 +97,7 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 
 	// Try cache first
 	if r.cache != nil {
-		cached, err := r.cache.Get(ctx, cacheKey).Result()
+		cached, err := r.cacheGet(ctx, cacheKey)
 		if err == nil {
 			if cached == string(notFoundSentinel) {
 				return nil, ErrNotFound
@@ -60,7 +107,7 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 				return &cachedURL, nil
 			}
 			log.Println("JSON unmarshal error:", err)
-		} else if err != redis.Nil {
+		} else if err != redis.Nil && !errors.Is(err, gobreaker.ErrOpenState) {
 			log.Println("Redis error:", err)
 		}
 	}
@@ -79,7 +126,7 @@ func (r *CachedURLRepository) Create(ctx context.Context, url *model.URL) error 
 	if r.cache != nil {
 		cacheKey := fmt.Sprintf("url:%s", url.ShortCode)
 		if data, err := json.Marshal(url); err == nil {
-			r.cache.Set(ctx, cacheKey, data, r.ttl)
+			r.cacheSet(ctx, cacheKey, data, r.ttl)
 		} else {
 			log.Println("JSON marshal error:", err)
 		}
@@ -95,9 +142,7 @@ func (r *CachedURLRepository) Delete(ctx context.Context, code string) error {
 
 	if r.cache != nil {
 		cacheKey := fmt.Sprintf("url:%s", code)
-		if err := r.cache.Del(ctx, cacheKey).Err(); err != nil && err != redis.Nil {
-			log.Println("Redis error:", err)
-		}
+		r.cacheDel(ctx, cacheKey)
 	}
 	return nil
 }
@@ -117,7 +162,7 @@ func queryFromDBWithSingleflight(ctx context.Context, r *CachedURLRepository, co
 		// Re-check cache: a previous singleflight call may have populated it
 		// before this callback was invoked (double-checked locking pattern).
 		if r.cache != nil {
-			cached, err := r.cache.Get(ctx, cacheKey).Result()
+			cached, err := r.cacheGet(ctx, cacheKey)
 			if err == nil {
 				if cached == string(notFoundSentinel) {
 					return nil, ErrNotFound
@@ -153,7 +198,7 @@ func rewriteCache(ctx context.Context, r *CachedURLRepository, cacheKey string, 
 	if err != nil {
 		if r.cache != nil && isNotFoundError(err) {
 			// Negative cache: store sentinel to prevent repeated DB queries
-			r.cache.Set(ctx, cacheKey, notFoundSentinel, time.Minute)
+			r.cacheSet(ctx, cacheKey, notFoundSentinel, time.Minute)
 		}
 		return nil, err
 	}
@@ -161,12 +206,40 @@ func rewriteCache(ctx context.Context, r *CachedURLRepository, cacheKey string, 
 	// Store the URL in cache for future requests
 	if r.cache != nil {
 		if data, err := json.Marshal(url); err == nil {
-			r.cache.Set(ctx, cacheKey, data, r.ttl)
+			r.cacheSet(ctx, cacheKey, data, r.ttl)
 		} else {
 			log.Println("JSON marshal error:", err)
 		}
 	}
 	return url, nil
+}
+
+func (r *CachedURLRepository) cacheGet(ctx context.Context, key string) (string, error) {
+	res, err := r.cacheCB.Execute(func() (interface{}, error) {
+		return r.cache.Get(ctx, key).Result()
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.(string), nil
+}
+
+func (r *CachedURLRepository) cacheSet(ctx context.Context, key string, data interface{}, ttl time.Duration) {
+	_, err := r.cacheCB.Execute(func() (interface{}, error) {
+		return nil, r.cache.Set(ctx, key, data, ttl).Err()
+	})
+	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
+		log.Println("Redis SET error:", err)
+	}
+}
+
+func (r *CachedURLRepository) cacheDel(ctx context.Context, key string) {
+	_, err := r.cacheCB.Execute(func() (interface{}, error) {
+		return nil, r.cache.Del(ctx, key).Err()
+	})
+	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
+		log.Println("Redis DEL error:", err)
+	}
 }
 
 // Compile-time check: CachedURLRepository must implement URLRepositoryInterface.

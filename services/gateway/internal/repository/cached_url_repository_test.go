@@ -8,8 +8,29 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
+
+// deadRedisClient returns a Redis client connected to a non-existent server.
+// Every operation will fail, which is used to trip the circuit breaker.
+func deadRedisClient() *redis.Client {
+	return redis.NewClient(&redis.Options{
+		Addr:        "localhost:59999",
+		DialTimeout: 10 * time.Millisecond,
+	})
+}
+
+// fastCBSettings returns circuit breaker settings suitable for testing:
+// trips after 2 failures, recovers after 100ms.
+func fastCBSettings() *CBSettings {
+	return &CBSettings{
+		MaxRequests:         1,
+		Interval:            time.Second,
+		Timeout:             100 * time.Millisecond,
+		ConsecutiveFailures: 2,
+	}
+}
 
 // testDB and testCache are declared and initialized in url_repository_test.go's TestMain
 
@@ -442,6 +463,169 @@ func TestCachedURLRepository_SingleFlight(t *testing.T) {
 
 		if val := counter.getByCodeCount.Load(); val != 1 {
 			t.Errorf("expected 1 DB query (singleflight), got %d", val)
+		}
+	})
+}
+
+// tripCircuitBreaker makes enough failing calls to open the circuit breaker.
+// It calls GetByCode on a non-existent code so that every call attempts
+// a Redis GET (which fails on the dead client), tripping the CB.
+func tripCircuitBreaker(ctx context.Context, repo *CachedURLRepository) {
+	for i := 0; i < 3; i++ {
+		repo.GetByCode(ctx, "tripCB")
+	}
+}
+
+func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
+	ctx := context.Background()
+	cacheTTL := 5 * time.Minute
+	cbOpts := CachedURLRepositoryOptions{CacheCB: fastCBSettings()}
+
+	t.Run("GetByCode falls back to DB when circuit opens", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+
+		badRedis := deadRedisClient()
+		defer badRedis.Close()
+
+		dbRepo := NewURLRepository(testDB.Pool)
+		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, cbOpts)
+
+		// Insert test data
+		id := uuid.New()
+		testDB.Pool.Exec(ctx, `
+			INSERT INTO urls (id, short_code, original_url, created_at)
+			VALUES ($1, $2, $3, $4)
+		`, id, "cbget", "https://example.com/cbget", time.Now())
+
+		// Trip the circuit breaker
+		tripCircuitBreaker(ctx, repo)
+
+		// Should still return data from DB despite open circuit
+		url, err := repo.GetByCode(ctx, "cbget")
+		if err != nil {
+			t.Fatalf("expected DB fallback, got error: %v", err)
+		}
+		if url.ShortCode != "cbget" {
+			t.Errorf("expected short_code 'cbget', got '%s'", url.ShortCode)
+		}
+	})
+
+	t.Run("Create succeeds when circuit is open", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+
+		badRedis := deadRedisClient()
+		defer badRedis.Close()
+
+		dbRepo := NewURLRepository(testDB.Pool)
+		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, cbOpts)
+
+		// Trip the circuit breaker
+		tripCircuitBreaker(ctx, repo)
+
+		// Create should succeed (DB write works, cache write silently fails)
+		url := &model.URL{
+			ID:          uuid.New(),
+			ShortCode:   "cbcreate",
+			OriginalURL: "https://example.com/cbcreate",
+			CreatedAt:   time.Now(),
+		}
+		err := repo.Create(ctx, url)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		// Verify data exists in DB
+		var count int
+		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "cbcreate").Scan(&count)
+		if count != 1 {
+			t.Errorf("expected 1 row in DB, got %d", count)
+		}
+	})
+
+	t.Run("Delete succeeds when circuit is open", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+
+		badRedis := deadRedisClient()
+		defer badRedis.Close()
+
+		dbRepo := NewURLRepository(testDB.Pool)
+		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, cbOpts)
+
+		// Insert test data
+		id := uuid.New()
+		testDB.Pool.Exec(ctx, `
+			INSERT INTO urls (id, short_code, original_url, created_at)
+			VALUES ($1, $2, $3, $4)
+		`, id, "cbdelete", "https://example.com/cbdelete", time.Now())
+
+		// Trip the circuit breaker
+		tripCircuitBreaker(ctx, repo)
+
+		// Delete should succeed (DB delete works, cache invalidation silently fails)
+		err := repo.Delete(ctx, "cbdelete")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		// Verify deleted from DB
+		var count int
+		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "cbdelete").Scan(&count)
+		if count != 0 {
+			t.Errorf("expected 0 rows in DB, got %d", count)
+		}
+	})
+
+	t.Run("circuit breaker recovers after timeout", func(t *testing.T) {
+		testDB.Cleanup(ctx)
+		testCache.Cleanup(ctx)
+
+		badRedis := deadRedisClient()
+		defer badRedis.Close()
+
+		dbRepo := NewURLRepository(testDB.Pool)
+		// Use dead Redis to trip the breaker, with MaxRequests=3 so
+		// half-open allows enough calls for a full GetByCode cycle
+		// (cacheGet in GetByCode + cacheGet re-check + cacheSet in rewriteCache).
+		recoverOpts := CachedURLRepositoryOptions{CacheCB: &CBSettings{
+			MaxRequests:         3,
+			Interval:            time.Second,
+			Timeout:             100 * time.Millisecond,
+			ConsecutiveFailures: 2,
+		}}
+		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, recoverOpts)
+
+		// Insert test data
+		id := uuid.New()
+		testDB.Pool.Exec(ctx, `
+			INSERT INTO urls (id, short_code, original_url, created_at)
+			VALUES ($1, $2, $3, $4)
+		`, id, "cbrecover", "https://example.com/cbrecover", time.Now())
+
+		// Trip the circuit breaker
+		tripCircuitBreaker(ctx, repo)
+
+		// Swap to a working Redis by replacing the cache field.
+		// This simulates Redis coming back online.
+		repo.cache = testCache.Client
+
+		// Wait for CB timeout to enter half-open state
+		time.Sleep(150 * time.Millisecond)
+
+		// This call should succeed: CB is half-open, Redis is now alive,
+		// so cacheGet succeeds (miss) → DB query → cacheSet succeeds → CB closes.
+		url, err := repo.GetByCode(ctx, "cbrecover")
+		if err != nil {
+			t.Fatalf("expected recovery, got error: %v", err)
+		}
+		if url.ShortCode != "cbrecover" {
+			t.Errorf("expected short_code 'cbrecover', got '%s'", url.ShortCode)
+		}
+
+		// Verify the URL is now cached (CB recovered, cacheSet succeeded)
+		cacheKey := "url:cbrecover"
+		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
+		if exists != 1 {
+			t.Error("expected URL to be cached after CB recovery")
 		}
 	})
 }
