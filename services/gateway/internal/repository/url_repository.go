@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -100,44 +99,3 @@ func (r *URLRepository) Delete(ctx context.Context, code string) error {
 // 	// - UPDATE urls SET click_count = click_count + 1 WHERE short_code = $1
 // 	return nil
 // }
-
-// CodeExists checks if a short code already exists
-// func (r *URLRepository) CodeExists(ctx context.Context, code string) (bool, error) {
-// 	// Check whether a short code exists in the database.
-// 	var exists bool
-// 	query := `SELECT EXISTS(SELECT 1 FROM urls WHERE short_code = $1)`
-// 	err := r.db.QueryRow(ctx, query, code).Scan(&exists)
-// 	if err != nil {
-// 		return false, err
-// 	}
-// 	return exists, nil
-// }
-
-// NewPostgresPool creates a new PostgreSQL connection pool
-func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
-	// Create a pgx connection pool with sensible defaults for the
-	// application. Parse config from the provided connection string.
-	config, err := pgxpool.ParseConfig(connString)
-	if err != nil {
-		return nil, err
-	}
-	// - Configure pool settings (max conns, timeouts, etc.)
-	// Configure pool settings
-	config.MaxConns = 10
-	config.MinConns = 2
-	config.MaxConnLifetime = time.Hour
-	config.MaxConnIdleTime = 30 * time.Minute
-
-	// Create the pool
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	// Test the connection
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	// - Return the pool
-	return pool, nil
-}

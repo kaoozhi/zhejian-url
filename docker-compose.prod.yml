@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-zhejian}"]
+      test: ["CMD", "pg_isready", "-U", "${DB_USER:-zhejian}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,7 +23,20 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
-  
+
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   gateway:
     build: ./services/gateway
     environment:
@@ -33,6 +46,9 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       DB_SSLMODE: ${DB_SSLMODE}
+      CACHE_HOST: ${CACHE_HOST}
+      CACHE_PORT: ${CACHE_PORT}
+      CACHE_TTL: ${CACHE_TTL}
     ports:
       - "8080:8080"
     depends_on:
@@ -40,8 +56,14 @@ services:
         condition: service_healthy
       migrations:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--spider", "http://localhost:8080/health"]
+      interval: 10s                                                                                                                                                      
+      timeout: 5s                                                                                                                                                        
+      retries: 3  
 
 volumes:
   postgres_data:
+  redis_data:

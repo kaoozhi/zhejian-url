@@ -16,11 +16,14 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
-	testDB  *testutil.TestDB
-	testCfg *config.Config
+	testDB           *testutil.TestDB
+	testCache        *testutil.TestCache
+	testCfg          *config.Config
+	testRequestGroup singleflight.Group
 )
 
 // TestMain sets up the test environment once for all tests
@@ -34,6 +37,12 @@ func TestMain(m *testing.M) {
 		panic("failed to setup test database: " + err.Error())
 	}
 
+	// Setup test cache
+	testCache, err = testutil.SetupTestCache(ctx)
+	if err != nil {
+		panic("failed to setup test cache: " + err.Error())
+	}
+
 	// Load test configuration
 	testCfg, err = config.Load()
 	if err != nil {
@@ -44,13 +53,14 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Cleanup
+	testCache.Teardown(ctx)
 	testDB.Teardown(ctx)
 	os.Exit(code)
 }
 
 func setupTestServer() *httptest.Server {
 	gin.SetMode(gin.TestMode)
-	router := server.NewRouter(testCfg, testDB.Pool)
+	router := server.NewRouter(testCfg, testDB.Pool, testCache.Client, &testRequestGroup)
 	srv := httptest.NewServer(router)
 	// ensure handlers that build absolute URLs use the test server base
 	testCfg.App.BaseURL = srv.URL
@@ -61,6 +71,7 @@ func setupTestServer() *httptest.Server {
 func TestHealthCheck(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 	srv := setupTestServer()
 	defer srv.Close()
 
@@ -79,6 +90,7 @@ func TestHealthCheck(t *testing.T) {
 func TestCreateShortURL_Success(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 	srv := setupTestServer()
 	defer srv.Close()
 
@@ -113,6 +125,7 @@ func TestCreateShortURL_Success(t *testing.T) {
 func TestGetURL_Success(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 
 	srv := setupTestServer()
 	defer srv.Close()
@@ -143,6 +156,7 @@ func TestGetURL_Success(t *testing.T) {
 func TestDeleteURL_Success(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 
 	srv := setupTestServer()
 	defer srv.Close()
@@ -175,6 +189,7 @@ func TestDeleteURL_Success(t *testing.T) {
 func TestFullFlow_CreateGetRedirectDelete(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 
 	srv := setupTestServer()
 	defer srv.Close()
@@ -222,6 +237,7 @@ func TestFullFlow_CreateGetRedirectDelete(t *testing.T) {
 func TestCreateShortURL_InvalidRequest(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 
 	srv := setupTestServer()
 	defer srv.Close()
@@ -286,6 +302,7 @@ func jsonValueToString(v interface{}) string {
 func TestRedirect_Success(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 
 	srv := setupTestServer()
 	defer srv.Close()
@@ -323,6 +340,7 @@ func TestRedirect_Success(t *testing.T) {
 func TestGetURL_NotFound(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 
 	srv := setupTestServer()
 	defer srv.Close()
@@ -340,6 +358,7 @@ func TestGetURL_NotFound(t *testing.T) {
 func TestCreateShortURL_ServerCollisionRetry(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
 
 	srv := setupTestServer()
 	defer srv.Close()
@@ -386,4 +405,122 @@ func TestCreateShortURL_ServerCollisionRetry(t *testing.T) {
 	assert.Equal(t, http.StatusMovedPermanently, resp.StatusCode)
 	assert.Equal(t, longURL, resp.Header.Get("Location"))
 	resp.Body.Close()
+}
+
+// TestCache_URLIsCachedAfterCreate verifies URL is cached after creation
+func TestCache_URLIsCachedAfterCreate(t *testing.T) {
+	ctx := context.Background()
+	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
+
+	srv := setupTestServer()
+	defer srv.Close()
+
+	// Create a short URL
+	reqBody := map[string]string{"url": "https://cache-create.example"}
+	body, _ := json.Marshal(reqBody)
+	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	var createResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&createResp)
+	resp.Body.Close()
+	shortCode := jsonValueToString(createResp["short_code"])
+
+	// Verify URL is cached
+	cacheKey := "url:" + shortCode
+	exists, err := testCache.Client.Exists(ctx, cacheKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), exists, "URL should be cached after creation")
+}
+
+// TestCache_ServedFromCacheAfterGet verifies subsequent reads use cache
+func TestCache_ServedFromCacheAfterGet(t *testing.T) {
+	ctx := context.Background()
+	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
+
+	srv := setupTestServer()
+	defer srv.Close()
+
+	// Create a short URL
+	reqBody := map[string]string{"url": "https://cache-get.example"}
+	body, _ := json.Marshal(reqBody)
+	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	var createResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&createResp)
+	resp.Body.Close()
+	shortCode := jsonValueToString(createResp["short_code"])
+
+	// First GET to ensure cached
+	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	// Delete from DB directly (bypass cache)
+	_, err = testDB.Pool.Exec(ctx, "DELETE FROM urls WHERE short_code = $1", shortCode)
+	require.NoError(t, err)
+
+	// Second GET should still succeed (served from cache)
+	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "Should be served from cache even though DB record deleted")
+}
+
+// TestCache_InvalidatedOnDelete verifies cache is cleared after deletion
+func TestCache_InvalidatedOnDelete(t *testing.T) {
+	ctx := context.Background()
+	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
+
+	srv := setupTestServer()
+	defer srv.Close()
+
+	// Create a short URL
+	reqBody := map[string]string{"url": "https://cache-delete.example"}
+	body, _ := json.Marshal(reqBody)
+	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	require.NoError(t, err)
+	var createResp map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&createResp)
+	resp.Body.Close()
+	shortCode := jsonValueToString(createResp["short_code"])
+
+	// Verify cached
+	cacheKey := "url:" + shortCode
+	exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
+	require.Equal(t, int64(1), exists, "URL should be cached before delete")
+
+	// Delete via API
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/urls/"+shortCode, nil)
+	delResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	delResp.Body.Close()
+
+	// Verify cache invalidated
+	exists, _ = testCache.Client.Exists(ctx, cacheKey).Result()
+	assert.Equal(t, int64(0), exists, "Cache should be invalidated after delete")
+}
+
+// TestCache_NegativeCaching verifies non-existent URLs are negatively cached
+func TestCache_NegativeCaching(t *testing.T) {
+	ctx := context.Background()
+	testDB.Cleanup(ctx)
+	testCache.Cleanup(ctx)
+
+	srv := setupTestServer()
+	defer srv.Close()
+
+	// Request non-existent URL
+	resp, err := http.Get(srv.URL + "/api/v1/urls/nonexistent123")
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	// Verify negative cache entry
+	cacheKey := "url:nonexistent123"
+	cached, err := testCache.Client.Get(ctx, cacheKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "__NOT_FOUND__", cached, "Non-existent URL should be negatively cached")
 }

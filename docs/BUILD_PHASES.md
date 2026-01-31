@@ -127,9 +127,8 @@ Add Redis caching with graceful degradation and basic observability.
    - TTL-based expiration
 
 2. **Cache Strategies**
-   - Bloom filter for existence checks (prevents DB queries for non-existent URLs)
-   - Cache warming on startup (top 1000 URLs)
    - Cache stampede prevention (singleflight pattern)
+   - Negative caching for non-existent URLs (already implemented)
 
 3. **Graceful Degradation**
    - Circuit breaker for Redis calls
@@ -154,7 +153,7 @@ Add Redis caching with graceful degradation and basic observability.
 ### Performance Targets
 - Cache hit: <5ms p99
 - Cache miss: <50ms p99
-- Cache hit ratio: >80% after warmup
+- Cache hit ratio: >80% under steady load
 
 ---
 
@@ -324,7 +323,11 @@ Add circuit breakers, retries, comprehensive failure handling, and Toxiproxy cha
    - Load shedding strategies (drop low-priority requests)
    - Graceful degradation levels
 
-5. **Concrete Chaos Scenarios** 🎯
+5. **Advanced Cache Strategies**
+   - Bloom filter for existence checks (prevents DB queries for non-existent URLs)
+   - Cache warming on startup (top 1000 URLs by click_count)
+
+6. **Concrete Chaos Scenarios** 🎯
 
    **Scenario 1: PostgreSQL Failure**
    ```bash
