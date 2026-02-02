@@ -16,6 +16,7 @@ import (
 type Handler struct {
 	urlService service.URLServiceInterface // URL shortening business logic
 	db         DBInterface                 // Database connection for health checks
+	cache      CacheInterface              // Cache conneciton for health checks
 }
 
 // DBInterface defines the database operations needed by the handler.
@@ -26,12 +27,20 @@ type DBInterface interface {
 	Close()                         // Close database connection
 }
 
+// CacheInterface defines the cache operations needed by the handler.
+// This interface allows for easy mocking in unit tests without
+// requiring a real cache connection.
+type CacheInterface interface {
+	Ping(ctx context.Context) error
+}
+
 // NewHandler creates a new handler instance with the provided dependencies.
 // It accepts interfaces to enable dependency injection and facilitate testing.
-func NewHandler(urlService service.URLServiceInterface, db DBInterface) *Handler {
+func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache CacheInterface) *Handler {
 	return &Handler{
 		urlService: urlService,
 		db:         db,
+		cache:      cache,
 	}
 }
 
@@ -61,23 +70,32 @@ func (h *Handler) SetupRouter() *gin.Engine {
 }
 
 // healthCheck handles GET /health
-// Returns the health status of the service and its dependencies.
+// Returns the health status of the service and all dependencies.
 // Response codes:
-//   - 200 OK: Service and database are healthy
-//   - 503 Service Unavailable: Database is unreachable
+//   - 200 OK: All dependencies are healthy
+//   - 503 Service Unavailable: One or more dependencies are down
 func (h *Handler) healthCheck(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Check database connectivity
-	if err := h.db.Ping(ctx); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status":  "degraded",
-			"message": "database unavailable",
-		})
-		return
+	cacheErr := h.cache.Ping(ctx)
+	dbErr := h.db.Ping(ctx)
+
+	status := "ok"
+	code := http.StatusOK
+	deps := gin.H{"cache": "up", "database": "up"}
+
+	if cacheErr != nil {
+		status = "degraded"
+		code = http.StatusServiceUnavailable
+		deps["cache"] = "down"
+	}
+	if dbErr != nil {
+		status = "degraded"
+		code = http.StatusServiceUnavailable
+		deps["database"] = "down"
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(code, gin.H{"status": status, "dependencies": deps})
 }
 
 // createShortURL handles POST /api/v1/shorten
