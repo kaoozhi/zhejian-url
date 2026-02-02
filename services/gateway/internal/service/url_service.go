@@ -22,7 +22,7 @@ var (
 
 // URLService handles business logic for URL operations
 type URLService struct {
-	repo             *repository.URLRepository
+	repo             *repository.CachedURLRepository
 	baseURL          string
 	shortCodeLen     int
 	shortCodeRetries int
@@ -37,7 +37,7 @@ type URLServiceInterface interface {
 }
 
 // NewURLService creates a new URL service
-func NewURLService(repo *repository.URLRepository, baseURL string, shortCodeLen int, shortCodeRetries int) *URLService {
+func NewURLService(repo *repository.CachedURLRepository, baseURL string, shortCodeLen int, shortCodeRetries int) *URLService {
 	return &URLService{
 		repo:             repo,
 		baseURL:          baseURL,

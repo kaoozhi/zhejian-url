@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/zhejian/url-shortener/gateway/internal/config"
-	"github.com/zhejian/url-shortener/gateway/internal/repository"
+	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
+	"golang.org/x/sync/singleflight"
 )
 
 func main() {
@@ -25,12 +26,20 @@ func main() {
 	ctx := context.Background()
 
 	// Connect to database
-	connectionString := cfg.Database.ConnectionString()
-	db, err := repository.NewPostgresPool(ctx, connectionString)
+	DBconnectionString := cfg.Database.ConnectionString()
+	db, err := infra.NewPostgresPool(ctx, DBconnectionString)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+
+	// Connect to cache
+	cacheConnString := cfg.Cache.ConnectionString()
+	cache, err := infra.NewCacheClient(ctx, cacheConnString)
+	if err != nil {
+		log.Fatalf("Failed to connect to cache: %v", err)
+	}
+	defer cache.Close()
 
 	// Verify database connectivity
 	if err := db.Ping(ctx); err != nil {
@@ -38,7 +47,13 @@ func main() {
 	}
 	log.Println("Database connected successfully")
 
-	srv := server.NewServer(cfg, db)
+	// Verify cache connectivity
+	if err := cache.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Failed to ping cache: %v", err)
+	}
+	log.Println("Cache connected successfully")
+
+	srv := server.NewServer(cfg, db, cache, &singleflight.Group{})
 
 	// Start server in a goroutine
 	go func() {

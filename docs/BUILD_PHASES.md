@@ -114,51 +114,94 @@ curl http://localhost:8080/health
 
 ---
 
-## Phase 4: Caching Layer
+## Phase 4: Caching Layer ✅ COMPLETED
 
 ### Objective
-Add Redis caching with graceful degradation and basic observability.
+Add Redis caching with graceful degradation.
 
 ### Tasks
-1. **Redis Integration**
+1. **Redis Integration** ✅
    - Connection pool with retry logic
    - Cache-aside pattern (read-through on miss)
    - Write-through on URL creation
    - TTL-based expiration
 
-2. **Cache Strategies**
-   - Bloom filter for existence checks (prevents DB queries for non-existent URLs)
-   - Cache warming on startup (top 1000 URLs)
+2. **Cache Strategies** ✅
    - Cache stampede prevention (singleflight pattern)
+   - Negative caching for non-existent URLs
 
-3. **Graceful Degradation**
+3. **Graceful Degradation** ✅
    - Circuit breaker for Redis calls
    - Fall back to PostgreSQL on cache failure
    - Configurable failure injection for testing
 
-4. **Basic Observability** 🆕
-   - Prometheus `/metrics` endpoint
-   - Key metrics:
-     - `http_request_duration_seconds` (histogram)
-     - `cache_hits_total` / `cache_misses_total` (counters)
-     - `db_queries_total` (counter)
-     - `errors_total` by type (counter)
-
 ### Deliverables
-- Redis caching working
-- Measurable latency improvement (baseline: <50ms p99)
-- Cache hit ratio tracking (target: >80%)
-- Prometheus metrics exportable
-- Failure injection config for Redis
+- ✅ Redis caching working
+- ✅ Measurable latency improvement (baseline: <50ms p99)
+- ✅ Cache hit ratio tracking (target: >80%)
+- ✅ Failure injection config for Redis
 
 ### Performance Targets
 - Cache hit: <5ms p99
 - Cache miss: <50ms p99
-- Cache hit ratio: >80% after warmup
+- Cache hit ratio: >80% under steady load
 
 ---
 
-## Phase 5: Rust Rate Limiter with gRPC
+## Phase 5: Observability Foundation (OTel + Prometheus + Jaeger)
+
+### Objective
+Add distributed tracing and metrics instrumentation using OpenTelemetry as the unified instrumentation layer, with Prometheus for metrics storage and Jaeger for trace visualization. Setting up observability before adding more services ensures every future service is traced from day one.
+
+### Tasks
+1. **OpenTelemetry SDK Integration**
+   - `go.opentelemetry.io/otel` SDK setup in the gateway
+   - Trace spans for HTTP handlers (middleware-based)
+   - Trace spans for Redis cache operations (hit/miss/error)
+   - Trace spans for PostgreSQL queries
+   - Span attributes: `http.method`, `http.status_code`, `db.system`, `cache.hit`, etc.
+
+2. **Prometheus Metrics via OTel**
+   - OTel metrics SDK with Prometheus exporter
+   - `/metrics` endpoint exposed on the gateway
+   - Key metrics:
+     - `http_request_duration_seconds` (histogram)
+     - `cache_hits_total` / `cache_misses_total` (counters)
+     - `db_query_duration_seconds` (histogram)
+     - `errors_total` by type (counter)
+     - `circuit_breaker_state` (gauge)
+
+3. **Trace Context Propagation**
+   - W3C TraceContext propagation middleware
+   - Correlation IDs in structured logs linked to trace IDs
+   - Prepares for cross-service propagation (gRPC, AMQP) in later phases
+
+4. **Infrastructure Setup**
+   - OTel Collector in Docker Compose (receives OTLP, exports to Prometheus + Jaeger)
+   - Jaeger all-in-one for trace visualization
+   - Prometheus for metrics scraping (scrapes OTel Collector)
+   - Add to `docker-compose.prod.yml`
+
+### Deliverables
+- OTel SDK integrated in gateway (traces + metrics)
+- Prometheus `/metrics` endpoint with key application metrics
+- Jaeger UI accessible for trace inspection
+- OTel Collector configured as telemetry pipeline
+- Trace spans covering: HTTP request → cache lookup → DB query → response
+- W3C TraceContext propagation ready for future services
+
+### Architecture
+```
+Gateway (OTel SDK)
+  │
+  ├─ traces (OTLP) ──→ OTel Collector ──→ Jaeger
+  │
+  └─ metrics (OTLP) ─→ OTel Collector ──→ Prometheus
+```
+
+---
+
+## Phase 6: Rust Rate Limiter with gRPC
 
 ### Objective
 Build a low-latency rate limiting service in Rust with gateway-first architecture.
@@ -217,7 +260,7 @@ toxiproxy-cli toxic add rate_limiter -t limit_data -a bytes=1000
 
 ---
 
-## Phase 6: Async Click Analytics with RabbitMQ
+## Phase 7: Async Click Analytics with RabbitMQ
 
 ### Objective
 Implement high-throughput click analytics pipeline demonstrating async processing benefits.
@@ -293,7 +336,7 @@ k6 run --vus 1000 tests/clicks-async.js
 
 ---
 
-## Phase 7: Resilience Patterns & Chaos Testing
+## Phase 8: Resilience Patterns & Chaos Testing
 
 ### Objective
 Add circuit breakers, retries, comprehensive failure handling, and Toxiproxy chaos testing infrastructure.
@@ -324,7 +367,11 @@ Add circuit breakers, retries, comprehensive failure handling, and Toxiproxy cha
    - Load shedding strategies (drop low-priority requests)
    - Graceful degradation levels
 
-5. **Concrete Chaos Scenarios** 🎯
+5. **Advanced Cache Strategies**
+   - Bloom filter for existence checks (prevents DB queries for non-existent URLs)
+   - Cache warming on startup (top 1000 URLs by click_count)
+
+6. **Concrete Chaos Scenarios** 🎯
 
    **Scenario 1: PostgreSQL Failure**
    ```bash
@@ -430,7 +477,7 @@ esac
 
 ---
 
-## Phase 8: Load Testing
+## Phase 9: Load Testing
 
 ### Objective
 Validate system performance under realistic load.
@@ -494,16 +541,16 @@ Validate system performance under realistic load.
 
 ---
 
-## Phase 9: Chaos Engineering Deep Dive 🎯 EXTENDED
+## Phase 10: Chaos Engineering Deep Dive 🎯 EXTENDED
 
 ### Objective
 Comprehensive chaos testing with automated scenarios and visual dashboards.
 
-**Prerequisites:** Toxiproxy infrastructure and basic chaos scenarios from Phase 7.
+**Prerequisites:** Toxiproxy infrastructure and basic chaos scenarios from Phase 8.
 
 ### Tasks
 1. **Automated Chaos Scenarios**
-   - All 5 scenarios from Phase 7 automated
+   - All 5 scenarios from Phase 8 automated
    - Chaos testing pipeline in CI (optional, nightly)
    - Experiment tracking (what, when, result)
 
@@ -555,10 +602,10 @@ Comprehensive chaos testing with automated scenarios and visual dashboards.
 
 ---
 
-## Phase 10: Observability Expansion
+## Phase 11: Dashboards & Alerting
 
 ### Objective
-Complete observability stack with dashboards and alerting.
+Complete the observability stack with Grafana dashboards and alerting rules. Builds on the OTel/Prometheus/Jaeger infrastructure from Phase 5.
 
 ### Tasks
 1. **Grafana Dashboards**
@@ -566,33 +613,29 @@ Complete observability stack with dashboards and alerting.
    - Per-service dashboards (Gateway, Rate Limiter, Workers)
    - Chaos testing dashboard (circuit breaker states, recovery times)
    - Analytics pipeline dashboard (queue depth, processing rate)
+   - Trace integration (link from dashboard panels to Jaeger traces)
 
-2. **Distributed Tracing** (Optional)
-   - OpenTelemetry integration
-   - Trace context propagation
-   - Jaeger setup
-
-3. **Alert Rules**
+2. **Alert Rules**
    - High error rate (>1%)
    - High latency (p95 >200ms)
    - Circuit breaker open
    - Queue depth growing (>10k messages)
    - DLQ not empty
 
-4. **Structured Logging**
+3. **Structured Logging**
    - JSON log format
-   - Correlation IDs across services
+   - Trace ID / Span ID injected into log fields (correlate logs ↔ traces)
    - Request/response logging
 
 ### Deliverables
 - Production-ready Grafana dashboards
 - Alert rules configured
-- (Optional) Distributed tracing working
+- Structured logs correlated with traces
 - Log aggregation setup
 
 ---
 
-## Phase 11: Documentation & Polish
+## Phase 12: Documentation & Polish
 
 ### Objective
 Create portfolio-quality documentation and demo materials.
@@ -631,20 +674,21 @@ Create portfolio-quality documentation and demo materials.
 
 ---
 
-## Timeline Summary (12 Weeks)
+## Timeline Summary (13 Weeks)
 
 ```
-Week 1-2:  ✅ Phase 1 - Core Foundation
-Week 2-3:  ✅ Phase 2 - CI/Test Automation
-Week 3-4:  ✅ Phase 3 - Build & Deployment (CD)
-Week 4-5:  Phase 4 - Caching + Basic Observability
-Week 5-6:  Phase 5 - Rust Rate Limiter + gRPC
-Week 6-7:  Phase 6 - RabbitMQ Click Analytics
-Week 7:    Phase 7 - Resilience Patterns + Toxiproxy
-Week 8:    Phase 8 - Load Testing
-Week 9-10: Phase 9 - Chaos Engineering (Extended)
-Week 11:   Phase 10 - Observability Expansion
-Week 12:   Phase 11 - Documentation & Polish
+Week 1-2:  ✅ Phase 1  - Core Foundation
+Week 2-3:  ✅ Phase 2  - CI/Test Automation
+Week 3-4:  ✅ Phase 3  - Build & Deployment (CD)
+Week 4-5:  ✅ Phase 4  - Caching Layer
+Week 5-6:  Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
+Week 6-7:  Phase 6  - Rust Rate Limiter + gRPC
+Week 7-8:  Phase 7  - RabbitMQ Click Analytics
+Week 8-9:  Phase 8  - Resilience Patterns + Toxiproxy
+Week 9:    Phase 9  - Load Testing
+Week 10-11: Phase 10 - Chaos Engineering (Extended)
+Week 12:   Phase 11 - Dashboards & Alerting
+Week 13:   Phase 12 - Documentation & Polish
 ```
 
 ---
@@ -652,11 +696,11 @@ Week 12:   Phase 11 - Documentation & Polish
 ## Key Changes from Original Plan
 
 1. **Moved CD (Phase 3) before complex features** - Deploy infrastructure early
-2. **Toxiproxy deferred to Phase 7** - Integrated with resilience patterns when there are multiple services to test
-3. **Focused RabbitMQ on click analytics** - Clear, demonstrable use case
-4. **Made link expiration optional** - Nice to have, not critical path
-5. **Extended chaos testing (Phase 9)** - More time for comprehensive scenarios
-6. **Added basic observability in Phase 4** - Metrics from the start
+2. **Observability before new services (Phase 5)** - OTel + Prometheus + Jaeger set up before rate limiter and analytics, so every service is traced from day one
+3. **Toxiproxy deferred to Phase 8** - Integrated with resilience patterns when there are multiple services to test
+4. **Focused RabbitMQ on click analytics** - Clear, demonstrable use case
+5. **Made link expiration optional** - Nice to have, not critical path
+6. **Extended chaos testing (Phase 10)** - More time for comprehensive scenarios
 7. **Concrete chaos scenarios with verification** - Not just theory, actual runnable tests
 
 ---

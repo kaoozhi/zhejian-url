@@ -10,45 +10,29 @@ services:
       POSTGRES_PASSWORD: zhejian_secret
       POSTGRES_DB: urlshortener
     ports:
-      - "5434:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U zhejian -d urlshortener"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # postgres_test:
-  #   image: postgres:16-alpine
-  #   environment:
-  #     POSTGRES_USER: urlshortener_test
-  #     POSTGRES_PASSWORD: urlshortener_test
-  #     POSTGRES_DB: urlshortener_test
-  #   ports:
-  #     - "5435:5432"  # Different port!
-  #   # No volume - data is ephemeral (good for tests!)
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U urlshortener_test"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 5
-
   # Redis - Caching layer (uncomment when ready)
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: zhejian-redis
-  #   command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redis_data:/data
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
+  redis:
+    image: redis:8-alpine
+    container_name: zhejian-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # RabbitMQ - Message broker (uncomment when ready)
   # rabbitmq:
@@ -160,7 +144,7 @@ services:
 
 volumes:
   postgres_data:
-  # redis_data:
+  redis_data:
   # rabbitmq_data:
   # prometheus_data:
   # grafana_data:
