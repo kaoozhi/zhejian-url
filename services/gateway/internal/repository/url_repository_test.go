@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
 )
@@ -56,16 +58,12 @@ func TestURLRepository_Create(t *testing.T) {
 		}
 
 		err := repo.Create(ctx, url)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify in database
 		var count int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "abc123").Scan(&count)
-		if count != 1 {
-			t.Errorf("expected 1 row, got %d", count)
-		}
+		assert.Equal(t, 1, count)
 	})
 
 	t.Run("success - create URL with expiry", func(t *testing.T) {
@@ -82,16 +80,12 @@ func TestURLRepository_Create(t *testing.T) {
 		}
 
 		err := repo.Create(ctx, url)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify expiry saved correctly
 		var savedExpiry time.Time
 		testDB.Pool.QueryRow(ctx, "SELECT expires_at FROM urls WHERE short_code = $1", "def456").Scan(&savedExpiry)
-		if savedExpiry.IsZero() {
-			t.Error("expected expires_at to be set")
-		}
+		assert.False(t, savedExpiry.IsZero(), "expected expires_at to be set")
 	})
 
 	t.Run("error - duplicate short code", func(t *testing.T) {
@@ -112,18 +106,12 @@ func TestURLRepository_Create(t *testing.T) {
 
 		// First insert should succeed
 		err := repo.Create(ctx, url1)
-		if err != nil {
-			t.Fatalf("first create failed: %v", err)
-		}
+		require.NoError(t, err, "first create failed")
 
 		// Second insert should fail with ErrCodeConflict
 		err = repo.Create(ctx, url2)
-		if err == nil {
-			t.Fatal("expected error for duplicate short code")
-		}
-		if err != ErrCodeConflict {
-			t.Errorf("expected ErrCodeConflict, got %v", err)
-		}
+		require.Error(t, err, "expected error for duplicate short code")
+		assert.ErrorIs(t, err, ErrCodeConflict)
 	})
 }
 
@@ -144,23 +132,13 @@ func TestURLRepository_GetByCode(t *testing.T) {
 
 		// Get by code
 		url, err := repo.GetByCode(ctx, "abc123")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify fields
-		if url.ShortCode != "abc123" {
-			t.Errorf("expected short_code 'abc123', got '%s'", url.ShortCode)
-		}
-		if url.OriginalURL != "https://example.com" {
-			t.Errorf("expected original_url 'https://example.com', got '%s'", url.OriginalURL)
-		}
-		if url.ClickCount != 0 {
-			t.Errorf("expected click_count 0, got %d", url.ClickCount)
-		}
-		if url.ExpiresAt == nil {
-			t.Error("expected expires_at to be set")
-		}
+		assert.Equal(t, "abc123", url.ShortCode)
+		assert.Equal(t, "https://example.com", url.OriginalURL)
+		assert.Equal(t, int64(0), url.ClickCount)
+		assert.NotNil(t, url.ExpiresAt, "expected expires_at to be set")
 	})
 
 	t.Run("success - get URL without expiry", func(t *testing.T) {
@@ -174,40 +152,25 @@ func TestURLRepository_GetByCode(t *testing.T) {
         `, id, "noexp1", "https://example.com/no-expiry", time.Now(), 0)
 
 		url, err := repo.GetByCode(ctx, "noexp1")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-
-		if url.ExpiresAt != nil {
-			t.Error("expected expires_at to be nil")
-		}
+		require.NoError(t, err)
+		assert.Nil(t, url.ExpiresAt, "expected expires_at to be nil")
 	})
 
 	t.Run("error - not found", func(t *testing.T) {
 		testDB.Cleanup(ctx)
 
 		url, err := repo.GetByCode(ctx, "notexist")
-		if err == nil {
-			t.Fatal("expected error for non-existent code")
-		}
-		if err != ErrNotFound {
-			t.Errorf("expected ErrNotFound, got %v", err)
-		}
-		if url != nil {
-			t.Error("expected url to be nil")
-		}
+		require.Error(t, err, "expected error for non-existent code")
+		assert.ErrorIs(t, err, ErrNotFound)
+		assert.Nil(t, url)
 	})
 
 	t.Run("error - empty code", func(t *testing.T) {
 		testDB.Cleanup(ctx)
 
 		url, err := repo.GetByCode(ctx, "")
-		if err == nil {
-			t.Fatal("expected error for empty code")
-		}
-		if url != nil {
-			t.Error("expected url to be nil")
-		}
+		require.Error(t, err, "expected error for empty code")
+		assert.Nil(t, url)
 	})
 }
 
@@ -228,43 +191,31 @@ func TestURLRepository_Delete(t *testing.T) {
 		// Verify exists before delete
 		var countBefore int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "del123").Scan(&countBefore)
-		if countBefore != 1 {
-			t.Fatal("test data not inserted")
-		}
+		require.Equal(t, 1, countBefore, "test data not inserted")
 
 		// Delete
 		err := repo.Delete(ctx, "del123")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify deleted
 		var countAfter int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "del123").Scan(&countAfter)
-		if countAfter != 0 {
-			t.Errorf("expected 0 rows after delete, got %d", countAfter)
-		}
+		assert.Equal(t, 0, countAfter, "expected 0 rows after delete")
 	})
 
 	t.Run("error - delete non-existent URL", func(t *testing.T) {
 		testDB.Cleanup(ctx)
 
 		err := repo.Delete(ctx, "notexist")
-		if err == nil {
-			t.Fatal("expected error for non-existent code")
-		}
-		if err != ErrNotFound {
-			t.Errorf("expected ErrNotFound, got %v", err)
-		}
+		require.Error(t, err, "expected error for non-existent code")
+		assert.ErrorIs(t, err, ErrNotFound)
 	})
 
 	t.Run("error - delete empty code", func(t *testing.T) {
 		testDB.Cleanup(ctx)
 
 		err := repo.Delete(ctx, "")
-		if err == nil {
-			t.Fatal("expected error for empty code")
-		}
+		require.Error(t, err, "expected error for empty code")
 	})
 
 	t.Run("success - delete does not affect other URLs", func(t *testing.T) {
@@ -283,15 +234,11 @@ func TestURLRepository_Delete(t *testing.T) {
 
 		// Delete only one
 		err := repo.Delete(ctx, "del001")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify other URL still exists
 		var count int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "keep01").Scan(&count)
-		if count != 1 {
-			t.Errorf("expected other URL to still exist, got count %d", count)
-		}
+		assert.Equal(t, 1, count, "expected other URL to still exist")
 	})
 }

@@ -414,9 +414,7 @@ func TestCreateShortURL_ServerCollisionRetry(t *testing.T) {
 	code2 := jsonValueToString(create2["short_code"])
 	require.NotEmpty(t, code2)
 
-	if code1 == code2 {
-		t.Fatalf("expected different short codes after retry, got same %s", code1)
-	}
+	require.NotEqual(t, code1, code2, "expected different short codes after retry, got same %s", code1)
 
 	// verify both codes resolve to the original URL
 	redirectClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {

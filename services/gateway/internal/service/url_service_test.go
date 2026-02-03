@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
@@ -62,26 +64,15 @@ func TestURLService_CreateShortURL(t *testing.T) {
 		}
 
 		resp, err := service.CreateShortURL(ctx, req)
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
+		require.NoError(t, err, "Expected no error, got %v", err)
 
-		if resp.ShortCode == "" {
-			t.Error("Expected short code to be generated")
-		}
-
-		if resp.ShortURL == "" {
-			t.Error("Expected short URL to be generated")
-		}
+		assert.NotEmpty(t, resp.ShortCode, "Expected short code to be generated")
+		assert.NotEmpty(t, resp.ShortURL, "Expected short URL to be generated")
 
 		expectedURL := testCfg.App.BaseURL + "/" + resp.ShortCode
-		if resp.ShortURL != expectedURL {
-			t.Errorf("Expected short URL %s, got %s", expectedURL, resp.ShortURL)
-		}
+		assert.Equal(t, expectedURL, resp.ShortURL, "Expected short URL %s, got %s", expectedURL, resp.ShortURL)
 
-		if resp.ExpiresAt != "" {
-			t.Error("Expected no expiration for permanent URL")
-		}
+		assert.Empty(t, resp.ExpiresAt, "Expected no expiration for permanent URL")
 	})
 
 	t.Run("creates short URL with custom alias", func(t *testing.T) {
@@ -93,13 +84,8 @@ func TestURLService_CreateShortURL(t *testing.T) {
 		}
 
 		resp, err := service.CreateShortURL(ctx, req)
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
-
-		if resp.ShortCode != "my-custom-alias" {
-			t.Errorf("Expected short code 'my-custom-alias', got %s", resp.ShortCode)
-		}
+		require.NoError(t, err, "Expected no error, got %v", err)
+		assert.Equal(t, "my-custom-alias", resp.ShortCode, "Expected short code 'my-custom-alias', got %s", resp.ShortCode)
 	})
 
 	t.Run("creates short URL with expiration", func(t *testing.T) {
@@ -111,25 +97,17 @@ func TestURLService_CreateShortURL(t *testing.T) {
 		}
 
 		resp, err := service.CreateShortURL(ctx, req)
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
+		require.NoError(t, err, "Expected no error, got %v", err)
 
-		if resp.ExpiresAt == "" {
-			t.Error("Expected expiration date to be set")
-		}
+		assert.NotEmpty(t, resp.ExpiresAt, "Expected expiration date to be set")
 
 		// Verify expiration is approximately 7 days from now
 		expiresAt, err := time.Parse(time.RFC3339, resp.ExpiresAt)
-		if err != nil {
-			t.Fatalf("Failed to parse expiration date: %v", err)
-		}
+		require.NoError(t, err, "Failed to parse expiration date: %v", err)
 
 		expectedExpiry := time.Now().AddDate(0, 0, 7)
 		diff := expiresAt.Sub(expectedExpiry).Abs()
-		if diff > time.Minute {
-			t.Errorf("Expiration date is not approximately 7 days from now")
-		}
+		assert.LessOrEqual(t, diff, time.Minute, "Expiration date is not approximately 7 days from now")
 	})
 
 	t.Run("fails when custom alias already exists", func(t *testing.T) {
@@ -141,9 +119,7 @@ func TestURLService_CreateShortURL(t *testing.T) {
 		}
 
 		_, err := service.CreateShortURL(ctx, req)
-		if err != nil {
-			t.Fatalf("Expected first creation to succeed, got %v", err)
-		}
+		require.NoError(t, err, "Expected first creation to succeed, got %v", err)
 
 		// Try to create another URL with the same alias
 		req2 := &model.CreateURLRequest{
@@ -152,9 +128,7 @@ func TestURLService_CreateShortURL(t *testing.T) {
 		}
 
 		_, err = service.CreateShortURL(ctx, req2)
-		if err == nil {
-			t.Error("Expected error for duplicate alias, got nil")
-		}
+		assert.Error(t, err, "Expected error for duplicate alias, got nil")
 	})
 
 	t.Run("retries on collision and succeeds", func(t *testing.T) {
@@ -166,32 +140,25 @@ func TestURLService_CreateShortURL(t *testing.T) {
 
 		// First creation should succeed and produce a short code
 		resp1, err := service.CreateShortURL(ctx, req)
-		if err != nil {
-			t.Fatalf("Expected first creation to succeed, got %v", err)
-		}
+		require.NoError(t, err, "Expected first creation to succeed, got %v", err)
 
 		// Second creation for the same long URL will initially generate
 		// the same candidate short code, causing a conflict; the service
 		// should retry and return a different short code.
 		resp2, err := service.CreateShortURL(ctx, req)
-		if err != nil {
-			t.Fatalf("Expected second creation to succeed after retry, got %v", err)
-		}
+		require.NoError(t, err, "Expected second creation to succeed after retry, got %v", err)
 
-		if resp1.ShortCode == resp2.ShortCode {
-			t.Errorf("Expected different short codes after retry, got same %s", resp1.ShortCode)
-		}
+		assert.NotEqual(t, resp1.ShortCode, resp2.ShortCode, "Expected different short codes after retry, got same %s", resp1.ShortCode)
 
 		// Verify both short codes exist in DB
 		var count int
 		err = testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", resp1.ShortCode).Scan(&count)
-		if err != nil || count != 1 {
-			t.Fatalf("expected first short code to exist, got count=%d err=%v", count, err)
-		}
+		require.NoError(t, err, "expected first short code to exist, got count=%d err=%v", count, err)
+		assert.Equal(t, 1, count, "expected first short code to exist, got count=%d", count)
+
 		err = testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", resp2.ShortCode).Scan(&count)
-		if err != nil || count != 1 {
-			t.Fatalf("expected second short code to exist, got count=%d err=%v", count, err)
-		}
+		require.NoError(t, err, "expected second short code to exist, got count=%d err=%v", count, err)
+		assert.Equal(t, 1, count, "expected second short code to exist, got count=%d", count)
 	})
 }
 
@@ -211,49 +178,28 @@ func TestURLService_GetURL(t *testing.T) {
 		}
 
 		createResp, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// Retrieve the URL
 		urlResp, err := service.GetURL(ctx, createResp.ShortCode)
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
+		require.NoError(t, err, "Expected no error, got %v", err)
 
-		if urlResp.ShortCode != "get-test" {
-			t.Errorf("Expected short code 'get-test', got %s", urlResp.ShortCode)
-		}
-
-		if urlResp.OriginalURL != "https://example.com/original" {
-			t.Errorf("Expected original URL 'https://example.com/original', got %s", urlResp.OriginalURL)
-		}
+		assert.Equal(t, "get-test", urlResp.ShortCode, "Expected short code 'get-test', got %s", urlResp.ShortCode)
+		assert.Equal(t, "https://example.com/original", urlResp.OriginalURL, "Expected original URL 'https://example.com/original', got %s", urlResp.OriginalURL)
 
 		expectedShortURL := testCfg.App.BaseURL + "/get-test"
-		if urlResp.ShortURL != expectedShortURL {
-			t.Errorf("Expected short URL '%s', got %s", expectedShortURL, urlResp.ShortURL)
-		}
+		assert.Equal(t, expectedShortURL, urlResp.ShortURL, "Expected short URL '%s', got %s", expectedShortURL, urlResp.ShortURL)
 
-		if urlResp.ClickCount != 0 {
-			t.Errorf("Expected click count 0, got %d", urlResp.ClickCount)
-		}
-
-		if urlResp.CreatedAt == "" {
-			t.Error("Expected created_at to be set")
-		}
+		assert.Equal(t, int64(0), urlResp.ClickCount, "Expected click count 0, got %d", urlResp.ClickCount)
+		assert.NotEmpty(t, urlResp.CreatedAt, "Expected created_at to be set")
 	})
 
 	t.Run("returns error for non-existent URL", func(t *testing.T) {
 		testDB.Cleanup(ctx)
 
 		_, err := service.GetURL(ctx, "nonexistent")
-		if err == nil {
-			t.Error("Expected error for non-existent URL, got nil")
-		}
-
-		if err != ErrURLNotFound {
-			t.Errorf("Expected ErrURLNotFound, got %v", err)
-		}
+		assert.Error(t, err, "Expected error for non-existent URL, got nil")
+		assert.Equal(t, ErrURLNotFound, err, "Expected ErrURLNotFound, got %v", err)
 	})
 
 	t.Run("returns error for expired URL", func(t *testing.T) {
@@ -266,18 +212,13 @@ func TestURLService_GetURL(t *testing.T) {
 			VALUES ($1, $2, $3, $4, $5)
 		`, "00000000-0000-0000-0000-000000000001", "expired-test", "https://example.com/expired", time.Now().Add(-48*time.Hour), expiredTime)
 		if err != nil {
-			t.Fatalf("Failed to insert expired URL: %v", err)
+			require.NoError(t, err, "Failed to insert expired URL: %v", err)
 		}
 
 		// Try to get the expired URL
 		_, err = service.GetURL(ctx, "expired-test")
-		if err == nil {
-			t.Error("Expected error for expired URL, got nil")
-		}
-
-		if err != ErrURLExpired {
-			t.Errorf("Expected ErrURLExpired, got %v", err)
-		}
+		assert.Error(t, err, "Expected error for expired URL, got nil")
+		assert.Equal(t, ErrURLExpired, err, "Expected ErrURLExpired, got %v", err)
 	})
 }
 
@@ -297,32 +238,20 @@ func TestURLService_Redirect(t *testing.T) {
 		}
 
 		createResp, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// Get redirect URL
 		originalURL, err := service.Redirect(ctx, createResp.ShortCode)
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
-
-		if originalURL != "https://example.com/redirect-target" {
-			t.Errorf("Expected redirect to 'https://example.com/redirect-target', got %s", originalURL)
-		}
+		require.NoError(t, err, "Expected no error, got %v", err)
+		assert.Equal(t, "https://example.com/redirect-target", originalURL, "Expected redirect to 'https://example.com/redirect-target', got %s", originalURL)
 	})
 
 	t.Run("returns error for non-existent short code", func(t *testing.T) {
 		testDB.Cleanup(ctx)
 
 		_, err := service.Redirect(ctx, "nonexistent")
-		if err == nil {
-			t.Error("Expected error for non-existent short code, got nil")
-		}
-
-		if err != ErrURLNotFound {
-			t.Errorf("Expected ErrURLNotFound, got %v", err)
-		}
+		assert.Error(t, err, "Expected error for non-existent short code, got nil")
+		assert.Equal(t, ErrURLNotFound, err, "Expected ErrURLNotFound, got %v", err)
 	})
 
 	t.Run("returns error for expired URL", func(t *testing.T) {
@@ -335,18 +264,13 @@ func TestURLService_Redirect(t *testing.T) {
 			VALUES ($1, $2, $3, $4, $5)
 		`, "00000000-0000-0000-0000-000000000002", "expired-redirect", "https://example.com/expired-redirect", time.Now().Add(-48*time.Hour), expiredTime)
 		if err != nil {
-			t.Fatalf("Failed to insert expired URL: %v", err)
+			require.NoError(t, err, "Failed to insert expired URL: %v", err)
 		}
 
 		// Try to redirect
 		_, err = service.Redirect(ctx, "expired-redirect")
-		if err == nil {
-			t.Error("Expected error for expired URL, got nil")
-		}
-
-		if err != ErrURLExpired {
-			t.Errorf("Expected ErrURLExpired, got %v", err)
-		}
+		assert.Error(t, err, "Expected error for expired URL, got nil")
+		assert.Equal(t, ErrURLExpired, err, "Expected ErrURLExpired, got %v", err)
 	})
 }
 
@@ -366,34 +290,23 @@ func TestURLService_DeleteURL(t *testing.T) {
 		}
 
 		createResp, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// Delete the URL
 		err = service.DeleteURL(ctx, createResp.ShortCode)
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
+		require.NoError(t, err, "Expected no error, got %v", err)
 
 		// Verify it's deleted by trying to get it
 		_, err = service.GetURL(ctx, createResp.ShortCode)
-		if err == nil {
-			t.Error("Expected error when getting deleted URL, got nil")
-		}
-
-		if err != ErrURLNotFound {
-			t.Errorf("Expected ErrURLNotFound, got %v", err)
-		}
+		assert.Error(t, err, "Expected error when getting deleted URL, got nil")
+		assert.Equal(t, ErrURLNotFound, err, "Expected ErrURLNotFound, got %v", err)
 	})
 
 	t.Run("returns error when deleting non-existent URL", func(t *testing.T) {
 		testDB.Cleanup(ctx)
 
 		err := service.DeleteURL(ctx, "nonexistent")
-		if err == nil {
-			t.Error("Expected error for non-existent URL, got nil")
-		}
+		assert.Error(t, err, "Expected error for non-existent URL, got nil")
 
 		// Check that the error is properly translated from repository layer
 		if err != repository.ErrNotFound {
@@ -411,25 +324,16 @@ func TestURLService_DeleteURL(t *testing.T) {
 		}
 
 		createResp, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// Delete it
 		err = service.DeleteURL(ctx, createResp.ShortCode)
-		if err != nil {
-			t.Fatalf("Failed to delete URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to delete URL: %v", err)
 
 		// Recreate with same alias
 		createResp2, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Expected to recreate URL after deletion, got error: %v", err)
-		}
-
-		if createResp2.ShortCode != "recreate-test" {
-			t.Errorf("Expected short code 'recreate-test', got %s", createResp2.ShortCode)
-		}
+		require.NoError(t, err, "Expected to recreate URL after deletion, got error: %v", err)
+		assert.Equal(t, "recreate-test", createResp2.ShortCode, "Expected short code 'recreate-test', got %s", createResp2.ShortCode)
 	})
 }
 
@@ -450,43 +354,27 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 		}
 
 		createResp, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		t.Logf("Created short URL: %s", createResp.ShortURL)
 
 		// 2. Retrieve URL metadata
 		urlResp, err := service.GetURL(ctx, createResp.ShortCode)
-		if err != nil {
-			t.Fatalf("Failed to get URL: %v", err)
-		}
-
-		if urlResp.OriginalURL != createReq.URL {
-			t.Errorf("Original URL mismatch: expected %s, got %s", createReq.URL, urlResp.OriginalURL)
-		}
+		require.NoError(t, err, "Failed to get URL: %v", err)
+		assert.Equal(t, createReq.URL, urlResp.OriginalURL, "Original URL mismatch: expected %s, got %s", createReq.URL, urlResp.OriginalURL)
 
 		// 3. Redirect to original URL
 		redirectURL, err := service.Redirect(ctx, createResp.ShortCode)
-		if err != nil {
-			t.Fatalf("Failed to redirect: %v", err)
-		}
-
-		if redirectURL != createReq.URL {
-			t.Errorf("Redirect URL mismatch: expected %s, got %s", createReq.URL, redirectURL)
-		}
+		require.NoError(t, err, "Failed to redirect: %v", err)
+		assert.Equal(t, createReq.URL, redirectURL, "Redirect URL mismatch: expected %s, got %s", createReq.URL, redirectURL)
 
 		// 4. Delete the URL
 		err = service.DeleteURL(ctx, createResp.ShortCode)
-		if err != nil {
-			t.Fatalf("Failed to delete URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to delete URL: %v", err)
 
 		// 5. Verify deletion
 		_, err = service.GetURL(ctx, createResp.ShortCode)
-		if err != ErrURLNotFound {
-			t.Errorf("Expected ErrURLNotFound after deletion, got %v", err)
-		}
+		assert.Equal(t, ErrURLNotFound, err, "Expected ErrURLNotFound after deletion, got %v", err)
 	})
 
 	t.Run("multiple URLs with different configurations", func(t *testing.T) {
@@ -511,21 +399,14 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 			}
 
 			_, err := service.CreateShortURL(ctx, req)
-			if err != nil {
-				t.Fatalf("Failed to create URL %s: %v", u.alias, err)
-			}
+			require.NoError(t, err, "Failed to create URL %s: %v", u.alias, err)
 		}
 
 		// Verify all URLs exist and can be retrieved
 		for _, u := range urls {
 			urlResp, err := service.GetURL(ctx, u.alias)
-			if err != nil {
-				t.Fatalf("Failed to get URL %s: %v", u.alias, err)
-			}
-
-			if urlResp.OriginalURL != u.url {
-				t.Errorf("URL mismatch for %s: expected %s, got %s", u.alias, u.url, urlResp.OriginalURL)
-			}
+			require.NoError(t, err, "Failed to get URL %s: %v", u.alias, err)
+			assert.Equal(t, u.url, urlResp.OriginalURL, "URL mismatch for %s: expected %s, got %s", u.alias, u.url, urlResp.OriginalURL)
 		}
 	})
 
@@ -552,17 +433,13 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 			}
 
 			resp, err := service.CreateShortURL(ctx, req)
-			if err != nil {
-				t.Fatalf("Failed to create URL for %s: %v", url, err)
-			}
+			require.NoError(t, err, "Failed to create URL for %s: %v", url, err)
 
-			if resp.ShortCode == "" {
-				t.Errorf("Expected short code to be generated for %s", url)
-			}
+			assert.NotEmpty(t, resp.ShortCode, "Expected short code to be generated for %s", url)
 
 			// Verify short code is unique
 			if _, exists := shortCodeMap[resp.ShortCode]; exists {
-				t.Errorf("Duplicate short code generated: %s", resp.ShortCode)
+				assert.Failf(t, "duplicate", "Duplicate short code generated: %s", resp.ShortCode)
 			}
 
 			shortCodeMap[resp.ShortCode] = url
@@ -572,34 +449,21 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 		// Verify we can retrieve all URLs by their generated short codes
 		for shortCode, expectedURL := range shortCodeMap {
 			urlResp, err := service.GetURL(ctx, shortCode)
-			if err != nil {
-				t.Fatalf("Failed to get URL for short code %s: %v", shortCode, err)
-			}
-
-			if urlResp.OriginalURL != expectedURL {
-				t.Errorf("URL mismatch for %s: expected %s, got %s", shortCode, expectedURL, urlResp.OriginalURL)
-			}
-
-			if urlResp.ShortCode != shortCode {
-				t.Errorf("Short code mismatch: expected %s, got %s", shortCode, urlResp.ShortCode)
-			}
+			require.NoError(t, err, "Failed to get URL for short code %s: %v", shortCode, err)
+			assert.Equal(t, expectedURL, urlResp.OriginalURL, "URL mismatch for %s: expected %s, got %s", shortCode, expectedURL, urlResp.OriginalURL)
+			assert.Equal(t, shortCode, urlResp.ShortCode, "Short code mismatch: expected %s, got %s", shortCode, urlResp.ShortCode)
 		}
 
 		// Verify we can also redirect using generated short codes
 		for shortCode, expectedURL := range shortCodeMap {
 			redirectURL, err := service.Redirect(ctx, shortCode)
-			if err != nil {
-				t.Fatalf("Failed to redirect for short code %s: %v", shortCode, err)
-			}
-
-			if redirectURL != expectedURL {
-				t.Errorf("Redirect mismatch for %s: expected %s, got %s", shortCode, expectedURL, redirectURL)
-			}
+			require.NoError(t, err, "Failed to redirect for short code %s: %v", shortCode, err)
+			assert.Equal(t, expectedURL, redirectURL, "Redirect mismatch for %s: expected %s, got %s", shortCode, expectedURL, redirectURL)
 		}
 
 		// Verify all 5 URLs were created
 		if len(shortCodeMap) != len(originalURLs) {
-			t.Errorf("Expected %d URLs to be created, got %d", len(originalURLs), len(shortCodeMap))
+			assert.Equal(t, len(originalURLs), len(shortCodeMap), "Expected %d URLs to be created, got %d", len(originalURLs), len(shortCodeMap))
 		}
 	})
 }
@@ -622,25 +486,17 @@ func TestURLService_WithCache(t *testing.T) {
 			CustomAlias: "cache-test",
 		}
 		_, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// First read - should cache the result
 		_, err = service.GetURL(ctx, "cache-test")
-		if err != nil {
-			t.Fatalf("Failed to get URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to get URL: %v", err)
 
 		// Verify it's in cache
 		cacheKey := "url:cache-test"
 		exists, err := testCache.Client.Exists(ctx, cacheKey).Result()
-		if err != nil {
-			t.Fatalf("Failed to check cache: %v", err)
-		}
-		if exists != 1 {
-			t.Error("Expected URL to be cached after first read")
-		}
+		require.NoError(t, err, "Failed to check cache: %v", err)
+		assert.Equal(t, int64(1), exists, "Expected URL to be cached after first read")
 	})
 
 	t.Run("serves from cache on subsequent reads", func(t *testing.T) {
@@ -657,31 +513,20 @@ func TestURLService_WithCache(t *testing.T) {
 			CustomAlias: "cache-hit",
 		}
 		_, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// First read to populate cache
 		_, err = service.GetURL(ctx, "cache-hit")
-		if err != nil {
-			t.Fatalf("Failed to get URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to get URL: %v", err)
 
 		// Delete from DB directly (bypass cache)
 		_, err = testDB.Pool.Exec(ctx, "DELETE FROM urls WHERE short_code = $1", "cache-hit")
-		if err != nil {
-			t.Fatalf("Failed to delete from DB: %v", err)
-		}
+		require.NoError(t, err, "Failed to delete from DB: %v", err)
 
 		// Second read should still succeed (served from cache)
 		urlResp, err := service.GetURL(ctx, "cache-hit")
-		if err != nil {
-			t.Fatalf("Expected cache hit, got error: %v", err)
-		}
-
-		if urlResp.OriginalURL != "https://example.com/cache-hit" {
-			t.Errorf("Expected cached URL, got %s", urlResp.OriginalURL)
-		}
+		require.NoError(t, err, "Expected cache hit, got error: %v", err)
+		assert.Equal(t, "https://example.com/cache-hit", urlResp.OriginalURL, "Expected cached URL, got %s", urlResp.OriginalURL)
 	})
 
 	t.Run("invalidates cache on delete", func(t *testing.T) {
@@ -698,34 +543,24 @@ func TestURLService_WithCache(t *testing.T) {
 			CustomAlias: "cache-delete",
 		}
 		_, err := service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// Read to ensure it's cached
 		_, err = service.GetURL(ctx, "cache-delete")
-		if err != nil {
-			t.Fatalf("Failed to get URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to get URL: %v", err)
 
 		// Verify it's cached
 		cacheKey := "url:cache-delete"
 		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 1 {
-			t.Fatal("Expected URL to be cached before delete")
-		}
+		assert.Equal(t, int64(1), exists, "Expected URL to be cached before delete")
 
 		// Delete via service (should invalidate cache)
 		err = service.DeleteURL(ctx, "cache-delete")
-		if err != nil {
-			t.Fatalf("Failed to delete URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to delete URL: %v", err)
 
 		// Verify cache is invalidated
 		exists, _ = testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 0 {
-			t.Error("Expected cache to be invalidated after delete")
-		}
+		assert.Equal(t, int64(0), exists, "Expected cache to be invalidated after delete")
 	})
 
 	t.Run("caches negative result for non-existent URL", func(t *testing.T) {
@@ -738,20 +573,13 @@ func TestURLService_WithCache(t *testing.T) {
 
 		// Try to get a non-existent URL
 		_, err := service.GetURL(ctx, "nonexistent-cache")
-		if err == nil {
-			t.Fatal("Expected error for non-existent URL")
-		}
+		assert.Error(t, err, "Expected error for non-existent URL")
 
 		// Verify negative result is cached
 		cacheKey := "url:nonexistent-cache"
 		cached, err := testCache.Client.Get(ctx, cacheKey).Result()
-		if err != nil {
-			t.Fatalf("Expected negative cache entry, got error: %v", err)
-		}
-
-		if cached != "__NOT_FOUND__" {
-			t.Errorf("Expected sentinel value '__NOT_FOUND__', got %s", cached)
-		}
+		require.NoError(t, err, "Expected negative cache entry, got error: %v", err)
+		assert.Equal(t, "__NOT_FOUND__", cached, "Expected sentinel value '__NOT_FOUND__', got %s", cached)
 	})
 
 	t.Run("create overwrites negative cache", func(t *testing.T) {
@@ -764,16 +592,12 @@ func TestURLService_WithCache(t *testing.T) {
 
 		// Try to get a non-existent URL (triggers negative caching)
 		_, err := service.GetURL(ctx, "overwrite-neg")
-		if err == nil {
-			t.Fatal("Expected error for non-existent URL")
-		}
+		assert.Error(t, err, "Expected error for non-existent URL")
 
 		// Verify negative cache exists
 		cacheKey := "url:overwrite-neg"
 		cached, _ := testCache.Client.Get(ctx, cacheKey).Result()
-		if cached != "__NOT_FOUND__" {
-			t.Fatalf("Expected negative cache entry, got %s", cached)
-		}
+		require.Equal(t, "__NOT_FOUND__", cached, "Expected negative cache entry, got %s", cached)
 
 		// Now create the URL
 		createReq := &model.CreateURLRequest{
@@ -781,24 +605,17 @@ func TestURLService_WithCache(t *testing.T) {
 			CustomAlias: "overwrite-neg",
 		}
 		_, err = service.CreateShortURL(ctx, createReq)
-		if err != nil {
-			t.Fatalf("Failed to create URL: %v", err)
-		}
+		require.NoError(t, err, "Failed to create URL: %v", err)
 
 		// The negative cache should be overwritten
 		cached, _ = testCache.Client.Get(ctx, cacheKey).Result()
 		if cached == "__NOT_FOUND__" {
-			t.Error("Expected negative cache to be overwritten by create")
+			assert.NotEqual(t, "__NOT_FOUND__", cached, "Expected negative cache to be overwritten by create")
 		}
 
 		// Should be able to get the URL now
 		urlResp, err := service.GetURL(ctx, "overwrite-neg")
-		if err != nil {
-			t.Fatalf("Expected URL to exist after create, got error: %v", err)
-		}
-
-		if urlResp.OriginalURL != "https://example.com/overwrite-neg" {
-			t.Errorf("Expected correct URL, got %s", urlResp.OriginalURL)
-		}
+		require.NoError(t, err, "Expected URL to exist after create, got error: %v", err)
+		assert.Equal(t, "https://example.com/overwrite-neg", urlResp.OriginalURL, "Expected correct URL, got %s", urlResp.OriginalURL)
 	})
 }

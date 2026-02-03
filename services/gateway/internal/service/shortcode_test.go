@@ -3,6 +3,9 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEncodeBase62(t *testing.T) {
@@ -21,9 +24,7 @@ func TestEncodeBase62(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := EncodeBase62(tt.input)
-			if result != tt.expected {
-				t.Errorf("EncodeBase62(%d) = %s, want %s", tt.input, result, tt.expected)
-			}
+			assert.Equal(t, tt.expected, result, "EncodeBase62(%d)", tt.input)
 		})
 	}
 }
@@ -82,13 +83,12 @@ func TestCanonicalize(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := Canonicalize(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Canonicalize() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				require.Error(t, err)
 				return
 			}
-			if result != tt.expected {
-				t.Errorf("Canonicalize(%s) = %s, want %s", tt.input, result, tt.expected)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result, "Canonicalize(%s)", tt.input)
 		})
 	}
 }
@@ -99,20 +99,14 @@ func TestHashURL(t *testing.T) {
 	hash1 := HashURL(url)
 	hash2 := HashURL(url)
 
-	if hash1 != hash2 {
-		t.Errorf("HashURL should be deterministic: got %d and %d", hash1, hash2)
-	}
+	assert.Equal(t, hash1, hash2, "HashURL should be deterministic")
 
 	// Different inputs should produce different outputs
 	hash3 := HashURL("https://example.com/other")
-	if hash1 == hash3 {
-		t.Errorf("HashURL should produce different hashes for different URLs")
-	}
+	assert.NotEqual(t, hash1, hash3, "HashURL should produce different hashes for different URLs")
 
 	// Should not be zero for valid URL
-	if hash1 == 0 {
-		t.Errorf("HashURL should not return 0 for valid URL")
-	}
+	assert.NotZero(t, hash1, "HashURL should not return 0 for valid URL")
 }
 
 func TestShortCodeGenerator_Generate(t *testing.T) {
@@ -143,21 +137,18 @@ func TestShortCodeGenerator_Generate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			code, err := generator.Generate(tt.url)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Generate() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				require.Error(t, err)
 				return
 			}
-			if !tt.wantErr {
-				// Check code length
-				if len(code) != 8 {
-					t.Errorf("Generate() code length = %d, want 8", len(code))
-				}
-				// Check code contains only base62 characters
-				for _, c := range code {
-					if !strings.ContainsRune(base62Chars, c) {
-						t.Errorf("Generate() code contains invalid character: %c", c)
-					}
-				}
+			require.NoError(t, err)
+
+			// Check code length
+			assert.Len(t, code, 8, "code length should be 8")
+
+			// Check code contains only base62 characters
+			for _, c := range code {
+				assert.True(t, strings.ContainsRune(base62Chars, c), "code contains invalid character: %c", c)
 			}
 		})
 	}
@@ -170,9 +161,7 @@ func TestShortCodeGenerator_Generate_Deterministic(t *testing.T) {
 	code1, _ := generator.Generate(url)
 	code2, _ := generator.Generate(url)
 
-	if code1 != code2 {
-		t.Errorf("Generate should be deterministic: got %s and %s", code1, code2)
-	}
+	assert.Equal(t, code1, code2, "Generate should be deterministic")
 }
 
 func TestShortCodeGenerator_Generate_DifferentURLs(t *testing.T) {
@@ -181,9 +170,7 @@ func TestShortCodeGenerator_Generate_DifferentURLs(t *testing.T) {
 	code1, _ := generator.Generate("https://example.com/page1")
 	code2, _ := generator.Generate("https://example.com/page2")
 
-	if code1 == code2 {
-		t.Errorf("Generate should produce different codes for different URLs: both got %s", code1)
-	}
+	assert.NotEqual(t, code1, code2, "Generate should produce different codes for different URLs")
 }
 
 func TestShortCodeGenerator_Generate_NormalizedURLs(t *testing.T) {
@@ -193,7 +180,5 @@ func TestShortCodeGenerator_Generate_NormalizedURLs(t *testing.T) {
 	code1, _ := generator.Generate("https://EXAMPLE.COM/page")
 	code2, _ := generator.Generate("https://example.com/page")
 
-	if code1 != code2 {
-		t.Errorf("Generate should normalize URLs: got %s and %s", code1, code2)
-	}
+	assert.Equal(t, code1, code2, "Generate should normalize URLs")
 }
