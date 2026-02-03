@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
 )
@@ -31,33 +33,23 @@ func TestNewPostgresPool(t *testing.T) {
 
 	t.Run("success - valid connection string", func(t *testing.T) {
 		connString, err := testDB.Container().ConnectionString(ctx, "sslmode=disable")
-		if err != nil {
-			t.Fatalf("failed to get connection string: %v", err)
-		}
+		require.NoError(t, err, "failed to get connection string")
 
 		pool, err := infra.NewPostgresPool(ctx, connString)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 		defer pool.Close()
 
-		if err := pool.Ping(ctx); err != nil {
-			t.Errorf("pool ping failed: %v", err)
-		}
+		assert.NoError(t, pool.Ping(ctx), "pool ping failed")
 	})
 
 	t.Run("error - invalid connection string", func(t *testing.T) {
 		_, err := infra.NewPostgresPool(ctx, "invalid://connection")
-		if err == nil {
-			t.Fatal("expected error for invalid connection string")
-		}
+		require.Error(t, err, "expected error for invalid connection string")
 	})
 
 	t.Run("error - unreachable host", func(t *testing.T) {
 		_, err := infra.NewPostgresPool(ctx, "postgres://user:pass@localhost:59999/db?sslmode=disable")
-		if err == nil {
-			t.Fatal("expected error for unreachable host")
-		}
+		require.Error(t, err, "expected error for unreachable host")
 	})
 }
 
@@ -65,39 +57,27 @@ func TestNewCacheClient(t *testing.T) {
 	ctx := context.Background()
 
 	testCache, err := testutil.SetupTestCache(ctx)
-	if err != nil {
-		t.Fatalf("failed to setup test cache: %v", err)
-	}
+	require.NoError(t, err, "failed to setup test cache")
 	defer testCache.Teardown(ctx)
 
 	t.Run("success - valid connection string", func(t *testing.T) {
 		connString, err := testCache.Container().ConnectionString(ctx)
-		if err != nil {
-			t.Fatalf("failed to get connection string: %v", err)
-		}
+		require.NoError(t, err, "failed to get connection string")
 
 		client, err := infra.NewCacheClient(ctx, connString)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 		defer client.Close()
 
-		if err := client.Ping(ctx).Err(); err != nil {
-			t.Errorf("client ping failed: %v", err)
-		}
+		assert.NoError(t, client.Ping(ctx).Err(), "client ping failed")
 	})
 
 	t.Run("error - invalid connection string", func(t *testing.T) {
 		_, err := infra.NewCacheClient(ctx, "invalid://connection")
-		if err == nil {
-			t.Fatal("expected error for invalid connection string")
-		}
+		require.Error(t, err, "expected error for invalid connection string")
 	})
 
 	t.Run("error - unreachable host", func(t *testing.T) {
 		_, err := infra.NewCacheClient(ctx, "redis://localhost:59999")
-		if err == nil {
-			t.Fatal("expected error for unreachable host")
-		}
+		require.Error(t, err, "expected error for unreachable host")
 	})
 }

@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -54,19 +56,13 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 
 		// Get should fetch from DB
 		url, err := repo.GetByCode(ctx, "cachemiss")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if url.ShortCode != "cachemiss" {
-			t.Errorf("expected short_code 'cachemiss', got '%s'", url.ShortCode)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "cachemiss", url.ShortCode)
 
 		// Verify it's now cached
 		cacheKey := "url:cachemiss"
 		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 1 {
-			t.Error("expected URL to be cached after fetch")
-		}
+		assert.Equal(t, int64(1), exists, "expected URL to be cached after fetch")
 	})
 
 	t.Run("cache hit - returns from cache without db query", func(t *testing.T) {
@@ -84,21 +80,15 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 		`, id, "cachehit", "https://example.com/cachehit", time.Now())
 
 		_, err := repo.GetByCode(ctx, "cachehit")
-		if err != nil {
-			t.Fatalf("first fetch failed: %v", err)
-		}
+		require.NoError(t, err, "first fetch failed")
 
 		// Delete from DB directly
 		testDB.Pool.Exec(ctx, "DELETE FROM urls WHERE short_code = $1", "cachehit")
 
 		// Should still return from cache
 		url, err := repo.GetByCode(ctx, "cachehit")
-		if err != nil {
-			t.Fatalf("expected cache hit, got error: %v", err)
-		}
-		if url.OriginalURL != "https://example.com/cachehit" {
-			t.Errorf("expected cached URL, got %s", url.OriginalURL)
-		}
+		require.NoError(t, err, "expected cache hit")
+		assert.Equal(t, "https://example.com/cachehit", url.OriginalURL)
 	})
 
 	t.Run("negative caching - caches not found", func(t *testing.T) {
@@ -110,19 +100,13 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 
 		// Fetch non-existent URL
 		_, err := repo.GetByCode(ctx, "notfound")
-		if err != ErrNotFound {
-			t.Fatalf("expected ErrNotFound, got %v", err)
-		}
+		require.ErrorIs(t, err, ErrNotFound)
 
 		// Verify sentinel is cached
 		cacheKey := "url:notfound"
 		cached, err := testCache.Client.Get(ctx, cacheKey).Result()
-		if err != nil {
-			t.Fatalf("expected cache entry, got error: %v", err)
-		}
-		if cached != "__NOT_FOUND__" {
-			t.Errorf("expected sentinel '__NOT_FOUND__', got '%s'", cached)
-		}
+		require.NoError(t, err, "expected cache entry")
+		assert.Equal(t, "__NOT_FOUND__", cached)
 	})
 
 	t.Run("negative cache hit - returns not found without db query", func(t *testing.T) {
@@ -144,9 +128,7 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 
 		// Should still return not found from cache
 		_, err := repo.GetByCode(ctx, "negcache")
-		if err != ErrNotFound {
-			t.Errorf("expected ErrNotFound from negative cache, got %v", err)
-		}
+		assert.ErrorIs(t, err, ErrNotFound, "expected ErrNotFound from negative cache")
 	})
 
 	t.Run("graceful degradation - works when cache is nil", func(t *testing.T) {
@@ -164,12 +146,8 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 
 		// Should still work, just without caching
 		url, err := repo.GetByCode(ctx, "nocache")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if url.ShortCode != "nocache" {
-			t.Errorf("expected short_code 'nocache', got '%s'", url.ShortCode)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "nocache", url.ShortCode)
 	})
 }
 
@@ -192,25 +170,17 @@ func TestCachedURLRepository_Create(t *testing.T) {
 		}
 
 		err := repo.Create(ctx, url)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify it's cached
 		cacheKey := "url:created"
 		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 1 {
-			t.Error("expected URL to be cached after create")
-		}
+		assert.Equal(t, int64(1), exists, "expected URL to be cached after create")
 
 		// Verify cache contains correct data
 		cachedURL, err := repo.GetByCode(ctx, "created")
-		if err != nil {
-			t.Fatalf("expected to get cached URL, got error: %v", err)
-		}
-		if cachedURL.OriginalURL != "https://example.com/created" {
-			t.Errorf("expected cached URL to match, got %s", cachedURL.OriginalURL)
-		}
+		require.NoError(t, err, "expected to get cached URL")
+		assert.Equal(t, "https://example.com/created", cachedURL.OriginalURL)
 	})
 
 	t.Run("overwrites negative cache on create", func(t *testing.T) {
@@ -226,9 +196,7 @@ func TestCachedURLRepository_Create(t *testing.T) {
 		// Verify negative cache exists
 		cacheKey := "url:overwrite"
 		cached, _ := testCache.Client.Get(ctx, cacheKey).Result()
-		if cached != "__NOT_FOUND__" {
-			t.Fatal("expected negative cache entry")
-		}
+		require.Equal(t, "__NOT_FOUND__", cached, "expected negative cache entry")
 
 		// Create the URL
 		url := &model.URL{
@@ -238,24 +206,16 @@ func TestCachedURLRepository_Create(t *testing.T) {
 			CreatedAt:   time.Now(),
 		}
 		err := repo.Create(ctx, url)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify negative cache is overwritten
 		cached, _ = testCache.Client.Get(ctx, cacheKey).Result()
-		if cached == "__NOT_FOUND__" {
-			t.Error("expected negative cache to be overwritten")
-		}
+		assert.NotEqual(t, "__NOT_FOUND__", cached, "expected negative cache to be overwritten")
 
 		// Should return the URL now
 		result, err := repo.GetByCode(ctx, "overwrite")
-		if err != nil {
-			t.Fatalf("expected URL, got error: %v", err)
-		}
-		if result.OriginalURL != "https://example.com/overwrite" {
-			t.Errorf("expected correct URL, got %s", result.OriginalURL)
-		}
+		require.NoError(t, err, "expected URL")
+		assert.Equal(t, "https://example.com/overwrite", result.OriginalURL)
 	})
 
 	t.Run("graceful degradation - works when cache is nil", func(t *testing.T) {
@@ -272,16 +232,12 @@ func TestCachedURLRepository_Create(t *testing.T) {
 		}
 
 		err := repo.Create(ctx, url)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify in DB
 		var count int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "nocache2").Scan(&count)
-		if count != 1 {
-			t.Errorf("expected 1 row, got %d", count)
-		}
+		assert.Equal(t, 1, count)
 	})
 }
 
@@ -308,21 +264,15 @@ func TestCachedURLRepository_Delete(t *testing.T) {
 		// Verify it's cached
 		cacheKey := "url:todelete"
 		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 1 {
-			t.Fatal("expected URL to be cached before delete")
-		}
+		require.Equal(t, int64(1), exists, "expected URL to be cached before delete")
 
 		// Delete
 		err := repo.Delete(ctx, "todelete")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify cache invalidated
 		exists, _ = testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 0 {
-			t.Error("expected cache to be invalidated after delete")
-		}
+		assert.Equal(t, int64(0), exists, "expected cache to be invalidated after delete")
 	})
 
 	t.Run("delete non-existent does not create cache entry", func(t *testing.T) {
@@ -334,16 +284,12 @@ func TestCachedURLRepository_Delete(t *testing.T) {
 
 		// Try to delete non-existent
 		err := repo.Delete(ctx, "nonexistent")
-		if err != ErrNotFound {
-			t.Fatalf("expected ErrNotFound, got %v", err)
-		}
+		require.ErrorIs(t, err, ErrNotFound)
 
 		// Verify no cache entry created
 		cacheKey := "url:nonexistent"
 		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 0 {
-			t.Error("expected no cache entry for failed delete")
-		}
+		assert.Equal(t, int64(0), exists, "expected no cache entry for failed delete")
 	})
 
 	t.Run("graceful degradation - works when cache is nil", func(t *testing.T) {
@@ -361,16 +307,12 @@ func TestCachedURLRepository_Delete(t *testing.T) {
 
 		// Delete should work
 		err := repo.Delete(ctx, "nocache3")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err)
 
 		// Verify deleted from DB
 		var count int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "nocache3").Scan(&count)
-		if count != 0 {
-			t.Errorf("expected 0 rows, got %d", count)
-		}
+		assert.Equal(t, 0, count)
 	})
 }
 
@@ -397,14 +339,10 @@ func TestCachedURLRepository_CacheTTL(t *testing.T) {
 		// Check TTL
 		cacheKey := "url:ttltest"
 		ttl, err := testCache.Client.TTL(ctx, cacheKey).Result()
-		if err != nil {
-			t.Fatalf("failed to get TTL: %v", err)
-		}
+		require.NoError(t, err, "failed to get TTL")
 
 		// TTL should be close to cacheTTL (within 1 second tolerance)
-		if ttl < cacheTTL-time.Second || ttl > cacheTTL {
-			t.Errorf("expected TTL close to %v, got %v", cacheTTL, ttl)
-		}
+		assert.True(t, ttl >= cacheTTL-time.Second && ttl <= cacheTTL, "expected TTL close to %v, got %v", cacheTTL, ttl)
 	})
 }
 
@@ -443,7 +381,7 @@ func TestCachedURLRepository_SingleFlight(t *testing.T) {
 		start := make(chan struct{})
 		errs := make([]error, n)
 
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -456,14 +394,10 @@ func TestCachedURLRepository_SingleFlight(t *testing.T) {
 		wg.Wait()
 
 		for i, err := range errs {
-			if err != nil {
-				t.Errorf("goroutine %d got error: %v", i, err)
-			}
+			assert.NoError(t, err, "goroutine %d got error", i)
 		}
 
-		if val := counter.getByCodeCount.Load(); val != 1 {
-			t.Errorf("expected 1 DB query (singleflight), got %d", val)
-		}
+		assert.Equal(t, int32(1), counter.getByCodeCount.Load(), "expected 1 DB query (singleflight)")
 	})
 }
 
@@ -502,12 +436,8 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 
 		// Should still return data from DB despite open circuit
 		url, err := repo.GetByCode(ctx, "cbget")
-		if err != nil {
-			t.Fatalf("expected DB fallback, got error: %v", err)
-		}
-		if url.ShortCode != "cbget" {
-			t.Errorf("expected short_code 'cbget', got '%s'", url.ShortCode)
-		}
+		require.NoError(t, err, "expected DB fallback, got error: %v", err)
+		assert.Equal(t, "cbget", url.ShortCode, "expected short_code 'cbget', got '%s'", url.ShortCode)
 	})
 
 	t.Run("Create succeeds when circuit is open", func(t *testing.T) {
@@ -530,16 +460,12 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 			CreatedAt:   time.Now(),
 		}
 		err := repo.Create(ctx, url)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err, "expected no error, got %v", err)
 
 		// Verify data exists in DB
 		var count int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "cbcreate").Scan(&count)
-		if count != 1 {
-			t.Errorf("expected 1 row in DB, got %d", count)
-		}
+		assert.Equal(t, 1, count, "expected 1 row in DB, got %d", count)
 	})
 
 	t.Run("Delete succeeds when circuit is open", func(t *testing.T) {
@@ -563,16 +489,12 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 
 		// Delete should succeed (DB delete works, cache invalidation silently fails)
 		err := repo.Delete(ctx, "cbdelete")
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
+		require.NoError(t, err, "expected no error, got %v", err)
 
 		// Verify deleted from DB
 		var count int
 		testDB.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM urls WHERE short_code = $1", "cbdelete").Scan(&count)
-		if count != 0 {
-			t.Errorf("expected 0 rows in DB, got %d", count)
-		}
+		assert.Equal(t, 0, count, "expected 0 rows in DB, got %d", count)
 	})
 
 	t.Run("circuit breaker recovers after timeout", func(t *testing.T) {
@@ -614,18 +536,12 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 		// This call should succeed: CB is half-open, Redis is now alive,
 		// so cacheGet succeeds (miss) → DB query → cacheSet succeeds → CB closes.
 		url, err := repo.GetByCode(ctx, "cbrecover")
-		if err != nil {
-			t.Fatalf("expected recovery, got error: %v", err)
-		}
-		if url.ShortCode != "cbrecover" {
-			t.Errorf("expected short_code 'cbrecover', got '%s'", url.ShortCode)
-		}
+		require.NoError(t, err, "expected recovery, got error: %v", err)
+		assert.Equal(t, "cbrecover", url.ShortCode, "expected short_code 'cbrecover', got '%s'", url.ShortCode)
 
 		// Verify the URL is now cached (CB recovered, cacheSet succeeded)
 		cacheKey := "url:cbrecover"
 		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
-		if exists != 1 {
-			t.Error("expected URL to be cached after CB recovery")
-		}
+		assert.Equal(t, int64(1), exists, "expected URL to be cached after CB recovery")
 	})
 }
