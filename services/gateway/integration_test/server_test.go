@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -49,6 +50,8 @@ func TestMain(m *testing.M) {
 		panic("failed to load config: " + err.Error())
 	}
 
+	// testCfg
+	testCfg.Server.Port = "0"
 	// Run tests
 	code := m.Run()
 
@@ -58,13 +61,44 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func setupTestServer() *httptest.Server {
+func setupTestServer(t *testing.T) (*http.Server, string) {
 	gin.SetMode(gin.TestMode)
-	router := server.NewRouter(testCfg, testDB.Pool, testCache.Client, &testRequestGroup)
-	srv := httptest.NewServer(router)
-	// ensure handlers that build absolute URLs use the test server base
-	testCfg.App.BaseURL = srv.URL
-	return srv
+	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, &testRequestGroup)
+
+	// Create listener on localhost
+	listener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+
+	// Get the actual port
+	actualAddr := listener.Addr().String()
+	baseURL := "http://" + actualAddr
+
+	// Start server in goroutine
+	go func() {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			t.Logf("Server error: %v", err)
+		}
+	}()
+	// Wait for server to be ready
+	waitForServer(t, baseURL+"/health", 3*time.Second)
+
+	return srv, baseURL
+}
+
+func waitForServer(t *testing.T, url string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+			t.Logf("Health check returned %d:", resp.StatusCode)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("Server did not become ready within %v", timeout)
 }
 
 // TestHealthCheck verifies the health check endpoint
@@ -72,16 +106,16 @@ func TestHealthCheck(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
-	resp, err := http.Get(srv.URL + "/health")
+	resp, err := http.Get(baseURL + "/health")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var response map[string]interface{}
+	var response map[string]any
 	json.NewDecoder(resp.Body).Decode(&response)
 	assert.Equal(t, "ok", response["status"])
 }
@@ -91,15 +125,15 @@ func TestCreateShortURL_Success(t *testing.T) {
 	ctx := context.Background()
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Create request body with long URL
 	reqBody := map[string]string{"url": "https://www.example.com/very/long/url"}
 	body, _ := json.Marshal(reqBody)
 
 	// Make POST request to /api/v1/urls
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -107,7 +141,7 @@ func TestCreateShortURL_Success(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Parse response and verify short_code and short_url are returned
-	var response map[string]interface{}
+	var response map[string]any
 	json.NewDecoder(resp.Body).Decode(&response)
 	assert.NotEmpty(t, response["short_code"])
 	// short_url should end with the short code
@@ -127,26 +161,26 @@ func TestGetURL_Success(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Create a short URL first
 	reqBody := map[string]string{"url": "https://www.example.org"}
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var createResp map[string]interface{}
+	var createResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&createResp)
 	resp.Body.Close()
 	shortCode := jsonValueToString(createResp["short_code"])
 
 	// Get URL metadata
-	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	resp, err = http.Get(baseURL + "/api/v1/urls/" + shortCode)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	var getResp map[string]interface{}
+	var getResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&getResp)
 	assert.Equal(t, shortCode, jsonValueToString(getResp["short_code"]))
 	assert.Equal(t, "https://www.example.org", jsonValueToString(getResp["original_url"]))
@@ -158,28 +192,28 @@ func TestDeleteURL_Success(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Create a short URL
 	reqBody := map[string]string{"url": "https://delete.example"}
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var createResp map[string]interface{}
+	var createResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&createResp)
 	resp.Body.Close()
 	shortCode := jsonValueToString(createResp["short_code"])
 
 	// Delete the URL
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/urls/"+shortCode, nil)
+	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/api/v1/urls/"+shortCode, nil)
 	delResp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer delResp.Body.Close()
 	assert.Equal(t, http.StatusNoContent, delResp.StatusCode)
 
 	// Verify GET now returns 404
-	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	resp, err = http.Get(baseURL + "/api/v1/urls/" + shortCode)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -191,21 +225,21 @@ func TestFullFlow_CreateGetRedirectDelete(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Create
 	reqBody := map[string]string{"url": "https://fullflow.example"}
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var createResp map[string]interface{}
+	var createResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&createResp)
 	resp.Body.Close()
 	shortCode := jsonValueToString(createResp["short_code"])
 
 	// Get
-	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	resp, err = http.Get(baseURL + "/api/v1/urls/" + shortCode)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
@@ -214,20 +248,20 @@ func TestFullFlow_CreateGetRedirectDelete(t *testing.T) {
 	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	resp, err = client.Get(srv.URL + "/" + shortCode)
+	resp, err = client.Get(baseURL + "/" + shortCode)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusMovedPermanently, resp.StatusCode)
 	resp.Body.Close()
 
 	// Delete
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/urls/"+shortCode, nil)
+	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/api/v1/urls/"+shortCode, nil)
 	delResp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusNoContent, delResp.StatusCode)
 	delResp.Body.Close()
 
 	// Verify gone
-	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	resp, err = http.Get(baseURL + "/api/v1/urls/" + shortCode)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	resp.Body.Close()
@@ -239,8 +273,8 @@ func TestCreateShortURL_InvalidRequest(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	tests := []struct {
 		name           string
@@ -277,7 +311,7 @@ func TestCreateShortURL_InvalidRequest(t *testing.T) {
 			} else {
 				bodyReader = bytes.NewReader([]byte(tt.requestBody))
 			}
-			resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bodyReader)
+			resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bodyReader)
 			require.NoError(t, err)
 			defer resp.Body.Close()
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
@@ -285,8 +319,8 @@ func TestCreateShortURL_InvalidRequest(t *testing.T) {
 	}
 }
 
-// helper to convert JSON-decoded interface{} to string
-func jsonValueToString(v interface{}) string {
+// helper to convert JSON-decoded any to string
+func jsonValueToString(v any) string {
 	if v == nil {
 		return ""
 	}
@@ -304,29 +338,24 @@ func TestRedirect_Success(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// First, create a short URL
 	reqBody := map[string]string{"url": "https://www.google.com"}
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var createResp map[string]interface{}
+	var createResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&createResp)
 	resp.Body.Close()
-	shortCode := ""
-	if v, ok := createResp["short_code"].(string); ok {
-		shortCode = v
-	} else {
-		shortCode = jsonValueToString(createResp["short_code"])
-	}
+	shortCode := jsonValueToString(createResp["short_code"])
 
 	// Make GET request to /{short_code} with redirect disabled
 	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse // Don't follow redirects
 	}}
-	resp, err = client.Get(srv.URL + "/" + shortCode)
+	resp, err = client.Get(baseURL + "/" + shortCode)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -342,10 +371,10 @@ func TestGetURL_NotFound(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
-	resp, err := http.Get(srv.URL + "/api/v1/urls/nonexistent")
+	resp, err := http.Get(baseURL + "/api/v1/urls/nonexistent")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -360,26 +389,26 @@ func TestCreateShortURL_ServerCollisionRetry(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	longURL := "https://collision-server.example"
 	reqBody := map[string]string{"url": longURL}
 	body, _ := json.Marshal(reqBody)
 
 	// First create
-	resp1, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp1, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var create1 map[string]interface{}
+	var create1 map[string]any
 	json.NewDecoder(resp1.Body).Decode(&create1)
 	resp1.Body.Close()
 	code1 := jsonValueToString(create1["short_code"])
 	require.NotEmpty(t, code1)
 
 	// Second create with same long URL — service should retry on collision
-	resp2, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp2, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var create2 map[string]interface{}
+	var create2 map[string]any
 	json.NewDecoder(resp2.Body).Decode(&create2)
 	resp2.Body.Close()
 	code2 := jsonValueToString(create2["short_code"])
@@ -394,13 +423,13 @@ func TestCreateShortURL_ServerCollisionRetry(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 
-	resp, err := redirectClient.Get(srv.URL + "/" + code1)
+	resp, err := redirectClient.Get(baseURL + "/" + code1)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusMovedPermanently, resp.StatusCode)
 	assert.Equal(t, longURL, resp.Header.Get("Location"))
 	resp.Body.Close()
 
-	resp, err = redirectClient.Get(srv.URL + "/" + code2)
+	resp, err = redirectClient.Get(baseURL + "/" + code2)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusMovedPermanently, resp.StatusCode)
 	assert.Equal(t, longURL, resp.Header.Get("Location"))
@@ -413,15 +442,15 @@ func TestCache_URLIsCachedAfterCreate(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Create a short URL
 	reqBody := map[string]string{"url": "https://cache-create.example"}
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var createResp map[string]interface{}
+	var createResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&createResp)
 	resp.Body.Close()
 	shortCode := jsonValueToString(createResp["short_code"])
@@ -439,21 +468,21 @@ func TestCache_ServedFromCacheAfterGet(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Create a short URL
 	reqBody := map[string]string{"url": "https://cache-get.example"}
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var createResp map[string]interface{}
+	var createResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&createResp)
 	resp.Body.Close()
 	shortCode := jsonValueToString(createResp["short_code"])
 
 	// First GET to ensure cached
-	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	resp, err = http.Get(baseURL + "/api/v1/urls/" + shortCode)
 	require.NoError(t, err)
 	resp.Body.Close()
 
@@ -462,7 +491,7 @@ func TestCache_ServedFromCacheAfterGet(t *testing.T) {
 	require.NoError(t, err)
 
 	// Second GET should still succeed (served from cache)
-	resp, err = http.Get(srv.URL + "/api/v1/urls/" + shortCode)
+	resp, err = http.Get(baseURL + "/api/v1/urls/" + shortCode)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "Should be served from cache even though DB record deleted")
@@ -474,15 +503,15 @@ func TestCache_InvalidatedOnDelete(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Create a short URL
 	reqBody := map[string]string{"url": "https://cache-delete.example"}
 	body, _ := json.Marshal(reqBody)
-	resp, err := http.Post(srv.URL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(baseURL+"/api/v1/shorten", "application/json", bytes.NewBuffer(body))
 	require.NoError(t, err)
-	var createResp map[string]interface{}
+	var createResp map[string]any
 	json.NewDecoder(resp.Body).Decode(&createResp)
 	resp.Body.Close()
 	shortCode := jsonValueToString(createResp["short_code"])
@@ -493,7 +522,7 @@ func TestCache_InvalidatedOnDelete(t *testing.T) {
 	require.Equal(t, int64(1), exists, "URL should be cached before delete")
 
 	// Delete via API
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/urls/"+shortCode, nil)
+	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/api/v1/urls/"+shortCode, nil)
 	delResp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	delResp.Body.Close()
@@ -509,11 +538,11 @@ func TestCache_NegativeCaching(t *testing.T) {
 	testDB.Cleanup(ctx)
 	testCache.Cleanup(ctx)
 
-	srv := setupTestServer()
-	defer srv.Close()
+	srv, baseURL := setupTestServer(t)
+	defer srv.Shutdown(ctx)
 
 	// Request non-existent URL
-	resp, err := http.Get(srv.URL + "/api/v1/urls/nonexistent123")
+	resp, err := http.Get(baseURL + "/api/v1/urls/nonexistent123")
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
