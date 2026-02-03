@@ -60,11 +60,24 @@ func (m *MockDB) Ping(ctx context.Context) error {
 
 func (m *MockDB) Close() {}
 
+// MockCache for health check
+type MockCache struct {
+	shouldFail bool
+}
+
+func (m *MockCache) Ping(ctx context.Context) error {
+	if m.shouldFail {
+		return assert.AnError
+	}
+	return nil
+}
+
 func TestHandler_HealthCheck(t *testing.T) {
-	t.Run("returns ok when database is healthy", func(t *testing.T) {
+	t.Run("returns ok when all dependencies are healthy", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
-		handler := api.NewHandler(mockService, mockDB)
+		mockCache := &MockCache{shouldFail: false}
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("GET", "/health", nil)
@@ -73,26 +86,72 @@ func TestHandler_HealthCheck(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 
-		var response map[string]string
+		var response map[string]interface{}
 		json.NewDecoder(w.Body).Decode(&response)
 		assert.Equal(t, "ok", response["status"])
-
+		deps := response["dependencies"].(map[string]interface{})
+		assert.Equal(t, "up", deps["cache"])
+		assert.Equal(t, "up", deps["database"])
 	})
 
-	t.Run("returns degraded when database is down", func(t *testing.T) {
+	t.Run("returns degraded when cache is down", func(t *testing.T) {
 		mockService := new(MockURLService)
-		mockDB := &MockDB{shouldFail: true}
-		handler := api.NewHandler(mockService, mockDB)
+		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: true}
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
+
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-		var response map[string]string
+		var response map[string]interface{}
 		json.NewDecoder(w.Body).Decode(&response)
 		assert.Equal(t, "degraded", response["status"])
+		deps := response["dependencies"].(map[string]interface{})
+		assert.Equal(t, "down", deps["cache"])
+		assert.Equal(t, "up", deps["database"])
+	})
 
+	t.Run("returns degraded when database is down", func(t *testing.T) {
+		mockService := new(MockURLService)
+		mockDB := &MockDB{shouldFail: true}
+		mockCache := &MockCache{shouldFail: false}
+		handler := api.NewHandler(mockService, mockDB, mockCache)
+		router := handler.SetupRouter()
+
+		req := httptest.NewRequest("GET", "/health", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+		var response map[string]interface{}
+		json.NewDecoder(w.Body).Decode(&response)
+		assert.Equal(t, "degraded", response["status"])
+		deps := response["dependencies"].(map[string]interface{})
+		assert.Equal(t, "up", deps["cache"])
+		assert.Equal(t, "down", deps["database"])
+	})
+
+	t.Run("returns degraded when both dependencies are down", func(t *testing.T) {
+		mockService := new(MockURLService)
+		mockDB := &MockDB{shouldFail: true}
+		mockCache := &MockCache{shouldFail: true}
+		handler := api.NewHandler(mockService, mockDB, mockCache)
+		router := handler.SetupRouter()
+
+		req := httptest.NewRequest("GET", "/health", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+		var response map[string]interface{}
+		json.NewDecoder(w.Body).Decode(&response)
+		assert.Equal(t, "degraded", response["status"])
+		deps := response["dependencies"].(map[string]interface{})
+		assert.Equal(t, "down", deps["cache"])
+		assert.Equal(t, "down", deps["database"])
 	})
 }
 
@@ -100,6 +159,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 	t.Run("returns 201 when URL is successfully created", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock expectation
 		mockService.On("CreateShortURL", mock.Anything, mock.Anything).Return(
@@ -110,7 +170,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 			nil,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		// Create request with JSON body
@@ -138,8 +198,9 @@ func TestHandler_CreateShortURL(t *testing.T) {
 	t.Run("returns 400 when request body is invalid JSON", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		reqBody := `{invalid json}`
@@ -159,6 +220,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 	t.Run("returns 400 when URL is invalid", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return invalid URL error
 		mockService.On("CreateShortURL", mock.Anything, mock.Anything).Return(
@@ -166,7 +228,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 			service.ErrInvalidURL,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		// Use a string that looks like URL but is invalid (service will validate)
@@ -190,6 +252,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 	t.Run("returns 409 when custom alias already exists", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return code exists error
 		mockService.On("CreateShortURL", mock.Anything, mock.Anything).Return(
@@ -197,7 +260,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 			service.ErrCodeExists,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		reqBody := `{"url": "https://example.com", "custom_alias": "taken"}`
@@ -220,6 +283,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 	t.Run("returns 400 when custom alias is invalid", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return invalid alias error
 		mockService.On("CreateShortURL", mock.Anything, mock.Anything).Return(
@@ -227,7 +291,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 			service.ErrInvalidAlias,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		reqBody := `{"url": "https://example.com", "custom_alias": "ab"}`
@@ -252,6 +316,7 @@ func TestHandler_GetURL(t *testing.T) {
 	t.Run("returns 200 with URL metadata when code exists", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock expectation
 		mockService.On("GetURL", mock.Anything, "abc123").Return(
@@ -265,7 +330,7 @@ func TestHandler_GetURL(t *testing.T) {
 			nil,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("GET", "/api/v1/urls/abc123", nil)
@@ -288,6 +353,7 @@ func TestHandler_GetURL(t *testing.T) {
 	t.Run("returns 404 when URL not found", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return not found error
 		mockService.On("GetURL", mock.Anything, "notfound").Return(
@@ -295,7 +361,7 @@ func TestHandler_GetURL(t *testing.T) {
 			service.ErrURLNotFound,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("GET", "/api/v1/urls/notfound", nil)
@@ -316,6 +382,7 @@ func TestHandler_GetURL(t *testing.T) {
 	t.Run("returns 410 when URL has expired", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return expired error
 		mockService.On("GetURL", mock.Anything, "expired").Return(
@@ -323,7 +390,7 @@ func TestHandler_GetURL(t *testing.T) {
 			service.ErrURLExpired,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("GET", "/api/v1/urls/expired", nil)
@@ -346,11 +413,12 @@ func TestHandler_DeleteURL(t *testing.T) {
 	t.Run("returns 204 when URL is successfully deleted", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock expectation
 		mockService.On("DeleteURL", mock.Anything, "abc123").Return(nil)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("DELETE", "/api/v1/urls/abc123", nil)
@@ -367,13 +435,14 @@ func TestHandler_DeleteURL(t *testing.T) {
 	t.Run("returns 404 when URL not found", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return not found error
 		mockService.On("DeleteURL", mock.Anything, "notfound").Return(
 			service.ErrURLNotFound,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("DELETE", "/api/v1/urls/notfound", nil)
@@ -396,6 +465,7 @@ func TestHandler_Redirect(t *testing.T) {
 	t.Run("returns 301 redirect when URL exists", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock expectation
 		mockService.On("Redirect", mock.Anything, "abc123").Return(
@@ -403,7 +473,7 @@ func TestHandler_Redirect(t *testing.T) {
 			nil,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("GET", "/abc123", nil)
@@ -420,6 +490,7 @@ func TestHandler_Redirect(t *testing.T) {
 	t.Run("returns 404 when URL not found", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return not found error
 		mockService.On("Redirect", mock.Anything, "notfound").Return(
@@ -427,7 +498,7 @@ func TestHandler_Redirect(t *testing.T) {
 			service.ErrURLNotFound,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("GET", "/notfound", nil)
@@ -448,6 +519,7 @@ func TestHandler_Redirect(t *testing.T) {
 	t.Run("returns 410 when URL has expired", func(t *testing.T) {
 		mockService := new(MockURLService)
 		mockDB := &MockDB{shouldFail: false}
+		mockCache := &MockCache{shouldFail: false}
 
 		// Setup mock to return expired error
 		mockService.On("Redirect", mock.Anything, "expired").Return(
@@ -455,7 +527,7 @@ func TestHandler_Redirect(t *testing.T) {
 			service.ErrURLExpired,
 		)
 
-		handler := api.NewHandler(mockService, mockDB)
+		handler := api.NewHandler(mockService, mockDB, mockCache)
 		router := handler.SetupRouter()
 
 		req := httptest.NewRequest("GET", "/expired", nil)

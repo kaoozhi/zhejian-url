@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -14,13 +15,20 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// redisPinger adapts *redis.Client to api.CacheInterface.
+type redisPinger struct{ client *redis.Client }
+
+func (r *redisPinger) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
+}
+
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // This is useful for testing where you don't need the full HTTP server.
 func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rg *singleflight.Group) *gin.Engine {
 	baseRepo := repository.NewURLRepository(db)
 	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL)
 	urlService := service.NewURLService(urlRepo, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
-	handler := api.NewHandler(urlService, db)
+	handler := api.NewHandler(urlService, db, &redisPinger{client: cache})
 	return handler.SetupRouter()
 }
 
