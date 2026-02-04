@@ -57,7 +57,10 @@ type AppConfig struct {
 
 // Load loads configuration from environment variables
 func Load() (*Config, error) {
-	_ = godotenv.Load("../../../../.env")
+	err := godotenv.Load("../../../../.env")
+	if err != nil {
+		return nil, err
+	}
 	return &Config{
 		Server: ServerConfig{
 			Port: getEnv("PORT", "8080"),
