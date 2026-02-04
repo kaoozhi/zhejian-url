@@ -25,10 +25,7 @@ func TestMain(m *testing.M) {
 
 	// Load test configuration
 	var err error
-	testCfg, err = config.Load()
-	if err != nil {
-		panic("failed to load config: " + err.Error())
-	}
+	testCfg = config.Load()
 
 	testDB, err = testutil.SetupTestDB(ctx)
 	if err != nil {

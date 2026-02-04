@@ -8,8 +8,12 @@ linters:
     - govet
     - staticcheck
     - gofmt
+    - unparam
+    - unused
 
 linters-settings:
   gofmt:
     simplify: true
-    
+  unparam:
+    check-exported: true
+

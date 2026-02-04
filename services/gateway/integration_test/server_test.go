@@ -17,14 +17,12 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
-	"golang.org/x/sync/singleflight"
 )
 
 var (
-	testDB           *testutil.TestDB
-	testCache        *testutil.TestCache
-	testCfg          *config.Config
-	testRequestGroup singleflight.Group
+	testDB    *testutil.TestDB
+	testCache *testutil.TestCache
+	testCfg   *config.Config
 )
 
 // TestMain sets up the test environment once for all tests
@@ -45,10 +43,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Load test configuration
-	testCfg, err = config.Load()
-	if err != nil {
-		panic("failed to load config: " + err.Error())
-	}
+	testCfg = config.Load()
 
 	// testCfg
 	testCfg.Server.Port = "0"
@@ -63,7 +58,7 @@ func TestMain(m *testing.M) {
 
 func setupTestServer(t *testing.T) (*http.Server, string) {
 	gin.SetMode(gin.TestMode)
-	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, &testRequestGroup)
+	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client)
 
 	// Create listener on localhost
 	listener, err := net.Listen("tcp", "localhost:0")

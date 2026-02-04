@@ -12,15 +12,11 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
-	"golang.org/x/sync/singleflight"
 )
 
 func main() {
 	// Load configuration from environment variables
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
+	cfg := config.Load()
 
 	// Create background context for database connection
 	ctx := context.Background()
@@ -53,7 +49,7 @@ func main() {
 	}
 	log.Println("Cache connected successfully")
 
-	srv := server.NewServer(cfg, db, cache, &singleflight.Group{})
+	srv := server.NewServer(cfg, db, cache)
 
 	// Start server in a goroutine
 	go func() {
