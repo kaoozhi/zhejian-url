@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -23,6 +24,7 @@ var (
 // URLService handles business logic for URL operations
 type URLService struct {
 	repo             *repository.CachedURLRepository
+	logger           *slog.Logger
 	baseURL          string
 	shortCodeLen     int
 	shortCodeRetries int
@@ -37,9 +39,15 @@ type URLServiceInterface interface {
 }
 
 // NewURLService creates a new URL service
-func NewURLService(repo *repository.CachedURLRepository, baseURL string, shortCodeLen int, shortCodeRetries int) *URLService {
+func NewURLService(repo *repository.CachedURLRepository,
+	logger *slog.Logger,
+	baseURL string,
+	shortCodeLen int,
+	shortCodeRetries int,
+) *URLService {
 	return &URLService{
 		repo:             repo,
+		logger:           logger,
 		baseURL:          baseURL,
 		shortCodeLen:     shortCodeLen,
 		shortCodeRetries: shortCodeRetries,
@@ -48,6 +56,12 @@ func NewURLService(repo *repository.CachedURLRepository, baseURL string, shortCo
 
 // CreateShortURL creates a new shortened URL
 func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLRequest) (*model.CreateURLResponse, error) {
+	// Log incoming request
+	s.logger.InfoContext(ctx, "creating short URL",
+		slog.String("url", req.URL),
+		slog.String("custom_alias", req.CustomAlias),
+		slog.Int("expires_in_days", req.ExpiresIn))
+
 	var shortCode string
 	var err error
 
@@ -58,6 +72,9 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 	}
 
 	if req.CustomAlias != "" {
+		s.logger.InfoContext(ctx, "using custom alias",
+			slog.String("alias", req.CustomAlias))
+
 		url := &model.URL{
 			ID:          uuid.New(),
 			ShortCode:   req.CustomAlias,
@@ -68,19 +85,31 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 		}
 		if err := s.repo.Create(ctx, url); err != nil {
 			if errors.Is(err, repository.ErrCodeConflict) {
+				s.logger.WarnContext(ctx, "custom alias already exists",
+					slog.String("alias", req.CustomAlias))
 				return nil, ErrCodeExists
 			}
+			s.logger.ErrorContext(ctx, "failed to create URL with custom alias",
+				slog.String("error", err.Error()),
+				slog.String("alias", req.CustomAlias))
 			return nil, err
 		}
 		shortCode = url.ShortCode
 	} else {
+		s.logger.InfoContext(ctx, "generating short code",
+			slog.Int("max_retries", s.shortCodeRetries))
+
 		g := NewShortCodeGenerator(s.shortCodeLen, s.shortCodeRetries, s.repo)
 		created := false
 		for attemp := 0; attemp < s.shortCodeRetries; attemp++ {
 			candidate, genErr := g.Generate(req.URL + strconv.Itoa(attemp))
 			if genErr != nil {
+				s.logger.ErrorContext(ctx, "short code generation failed",
+					slog.String("error", genErr.Error()),
+					slog.Int("attempt", attemp+1))
 				return nil, genErr
 			}
+
 			url := &model.URL{
 				ID:          uuid.New(),
 				ShortCode:   candidate,
@@ -91,8 +120,16 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 			}
 			if err = s.repo.Create(ctx, url); err != nil {
 				if errors.Is(err, repository.ErrCodeConflict) {
+					s.logger.WarnContext(ctx, "short code collision detected, retrying",
+						slog.String("code", candidate),
+						slog.Int("attempt", attemp+1),
+						slog.Int("max_retries", s.shortCodeRetries))
 					continue
 				}
+				s.logger.ErrorContext(ctx, "failed to create URL",
+					slog.String("error", err.Error()),
+					slog.String("code", candidate),
+					slog.Int("attempt", attemp+1))
 				return nil, err
 			}
 			shortCode = candidate
@@ -100,6 +137,8 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 			break
 		}
 		if !created {
+			s.logger.ErrorContext(ctx, "failed to generate unique short code after max retries",
+				slog.Int("max_retries", s.shortCodeRetries))
 			return nil, ErrShortCodeGeneration
 		}
 	}
@@ -110,6 +149,11 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 		expiresAtStr = expiresAt.Format(time.RFC3339)
 	}
 
+	// Log success
+	s.logger.InfoContext(ctx, "short URL created",
+		slog.String("short_code", shortCode),
+		slog.String("url", req.URL))
+
 	return &model.CreateURLResponse{
 		ShortCode: shortCode,
 		ShortURL:  s.baseURL + "/" + shortCode,
@@ -119,8 +163,14 @@ func (s *URLService) CreateShortURL(ctx context.Context, req *model.CreateURLReq
 
 // GetURL retrieves URL metadata by short code
 func (s *URLService) GetURL(ctx context.Context, code string) (*model.URLResponse, error) {
+	s.logger.DebugContext(ctx, "fetching URL metadata",
+		slog.String("code", code))
+
 	url, err := s.getAndValidateURL(ctx, code)
 	if err != nil {
+		s.logger.WarnContext(ctx, "URL not found or invalid",
+			slog.String("code", code),
+			slog.String("error", err.Error()))
 		return nil, err
 	}
 
@@ -141,22 +191,44 @@ func (s *URLService) GetURL(ctx context.Context, code string) (*model.URLRespons
 
 // Redirect retrieves the original URL for redirection
 func (s *URLService) Redirect(ctx context.Context, code string) (string, error) {
+	s.logger.InfoContext(ctx, "redirecting",
+		slog.String("code", code))
+
 	url, err := s.getAndValidateURL(ctx, code)
 	if err != nil {
+		s.logger.WarnContext(ctx, "redirect failed, URL not found or invalid",
+			slog.String("code", code),
+			slog.String("error", err.Error()))
 		return "", err
 	}
+
+	s.logger.InfoContext(ctx, "redirect successful",
+		slog.String("code", code),
+		slog.String("target_url", url.OriginalURL))
 
 	return url.OriginalURL, nil
 }
 
 // DeleteURL removes a shortened URL
 func (s *URLService) DeleteURL(ctx context.Context, code string) error {
+	s.logger.InfoContext(ctx, "deleting URL",
+		slog.String("code", code))
+
 	if err := s.repo.Delete(ctx, code); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
+			s.logger.WarnContext(ctx, "URL not found for deletion",
+				slog.String("code", code))
 			return ErrURLNotFound
 		}
+		s.logger.ErrorContext(ctx, "failed to delete URL",
+			slog.String("code", code),
+			slog.String("error", err.Error()))
 		return err
 	}
+
+	s.logger.InfoContext(ctx, "URL deleted successfully",
+		slog.String("code", code))
+
 	return nil
 }
 

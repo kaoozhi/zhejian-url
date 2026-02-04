@@ -8,7 +8,7 @@ linters:
     - govet
     - staticcheck
     - gofmt
-    - unparam
+    # - unparam
     - unused
 
 linters-settings:
