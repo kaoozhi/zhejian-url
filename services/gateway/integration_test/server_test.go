@@ -43,10 +43,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Load test configuration
-	testCfg, err = config.Load()
-	if err != nil {
-		panic("failed to load config: " + err.Error())
-	}
+	testCfg = config.Load()
 
 	// testCfg
 	testCfg.Server.Port = "0"

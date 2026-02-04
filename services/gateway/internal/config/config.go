@@ -56,11 +56,9 @@ type AppConfig struct {
 }
 
 // Load loads configuration from environment variables
-func Load() (*Config, error) {
-	err := godotenv.Load("../../../../.env")
-	if err != nil {
-		return nil, err
-	}
+func Load() *Config {
+	_ = godotenv.Load("../../../../.env")
+
 	return &Config{
 		Server: ServerConfig{
 			Port: getEnv("PORT", "8080"),
@@ -91,7 +89,7 @@ func Load() (*Config, error) {
 			MaxAliasLen:      20,
 			MinAliasLen:      3,
 		},
-	}, nil
+	}
 }
 
 type ConnectionInterface interface {
