@@ -12,7 +12,6 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
 	"github.com/zhejian/url-shortener/gateway/internal/service"
-	"golang.org/x/sync/singleflight"
 )
 
 // redisPinger adapts *redis.Client to api.CacheInterface.
@@ -24,7 +23,7 @@ func (r *redisPinger) Ping(ctx context.Context) error {
 
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // This is useful for testing where you don't need the full HTTP server.
-func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rg *singleflight.Group) *gin.Engine {
+func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client) *gin.Engine {
 	baseRepo := repository.NewURLRepository(db)
 	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL)
 	urlService := service.NewURLService(urlRepo, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
@@ -34,8 +33,8 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rg *si
 
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
-func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rg *singleflight.Group) *http.Server {
-	router := NewRouter(cfg, db, cache, rg)
+func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client) *http.Server {
+	router := NewRouter(cfg, db, cache)
 
 	return &http.Server{
 		Addr:         ":" + cfg.Server.Port,
