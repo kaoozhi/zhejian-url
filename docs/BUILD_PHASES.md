@@ -171,9 +171,13 @@ Add distributed tracing and metrics instrumentation using OpenTelemetry as the u
      - `errors_total` by type (counter)
      - `circuit_breaker_state` (gauge)
 
-3. **Trace Context Propagation**
+3. **Trace Context Propagation & Structured Logging**
    - W3C TraceContext propagation middleware
-   - Correlation IDs in structured logs linked to trace IDs
+   - **Structured logging with `slog` (Go standard library)**
+     - JSON log format
+     - Trace ID and Span ID injected into log fields (correlate logs ↔ traces)
+     - HTTP middleware logging (method, path, status, duration)
+     - Error logging with trace context
    - Prepares for cross-service propagation (gRPC, AMQP) in later phases
 
 4. **Infrastructure Setup**
@@ -189,6 +193,7 @@ Add distributed tracing and metrics instrumentation using OpenTelemetry as the u
 - OTel Collector configured as telemetry pipeline
 - Trace spans covering: HTTP request → cache lookup → DB query → response
 - W3C TraceContext propagation ready for future services
+- **Structured JSON logs with trace correlation using `slog`**
 
 ### Architecture
 ```
@@ -622,16 +627,17 @@ Complete the observability stack with Grafana dashboards and alerting rules. Bui
    - Queue depth growing (>10k messages)
    - DLQ not empty
 
-3. **Structured Logging**
-   - JSON log format
-   - Trace ID / Span ID injected into log fields (correlate logs ↔ traces)
-   - Request/response logging
+3. **Enhanced Logging & Aggregation** (builds on Phase 5 `slog` implementation)
+   - Detailed request/response body logging (optional, configurable)
+   - Log aggregation setup (Loki, ELK, or CloudWatch)
+   - Log-based alerting rules
+   - Log retention policies
 
 ### Deliverables
 - Production-ready Grafana dashboards
-- Alert rules configured
-- Structured logs correlated with traces
-- Log aggregation setup
+- Alert rules configured (metrics + logs)
+- Log aggregation infrastructure (Loki/ELK/CloudWatch)
+- Enhanced logging with request/response details
 
 ---
 

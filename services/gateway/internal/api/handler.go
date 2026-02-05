@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,7 @@ type Handler struct {
 	urlService service.URLServiceInterface // URL shortening business logic
 	db         DBInterface                 // Database connection for health checks
 	cache      CacheInterface              // Cache conneciton for health checks
+	logger     *slog.Logger                // Structured logger for validation/error logging
 }
 
 // DBInterface defines the database operations needed by the handler.
@@ -36,11 +38,12 @@ type CacheInterface interface {
 
 // NewHandler creates a new handler instance with the provided dependencies.
 // It accepts interfaces to enable dependency injection and facilitate testing.
-func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache CacheInterface) *Handler {
+func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache CacheInterface, logger *slog.Logger) *Handler {
 	return &Handler{
 		urlService: urlService,
 		db:         db,
 		cache:      cache,
+		logger:     logger,
 	}
 }
 
@@ -112,6 +115,9 @@ func (h *Handler) createShortURL(c *gin.Context) {
 
 	// Bind and validate JSON request body
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.WarnContext(ctx, "invalid request body",
+			slog.String("error", err.Error()),
+			slog.String("path", c.Request.URL.Path))
 		h.errorResponse(c, http.StatusBadRequest, "Invalid request body")
 		return
 	}
@@ -128,6 +134,8 @@ func (h *Handler) createShortURL(c *gin.Context) {
 		case errors.Is(err, service.ErrInvalidAlias):
 			h.errorResponse(c, http.StatusBadRequest, "Invalid custom alias")
 		default:
+			h.logger.ErrorContext(ctx, "unexpected error creating short URL",
+				slog.String("error", err.Error()))
 			h.errorResponse(c, http.StatusInternalServerError, "Internal server error")
 		}
 		return
@@ -161,6 +169,9 @@ func (h *Handler) getURL(c *gin.Context) {
 		case errors.Is(err, service.ErrURLExpired):
 			h.errorResponse(c, http.StatusGone, "URL has expired")
 		default:
+			h.logger.ErrorContext(ctx, "unexpected error fetching URL",
+				slog.String("error", err.Error()),
+				slog.String("code", code))
 			h.errorResponse(c, http.StatusInternalServerError, "Internal server error")
 		}
 		return
@@ -190,6 +201,9 @@ func (h *Handler) deleteURL(c *gin.Context) {
 		case errors.Is(err, service.ErrURLNotFound):
 			h.errorResponse(c, http.StatusNotFound, "URL not found")
 		default:
+			h.logger.ErrorContext(ctx, "unexpected error deleting URL",
+				slog.String("error", err.Error()),
+				slog.String("code", code))
 			h.errorResponse(c, http.StatusInternalServerError, "Internal server error")
 		}
 		return
@@ -224,6 +238,9 @@ func (h *Handler) redirect(c *gin.Context) {
 		case errors.Is(err, service.ErrURLExpired):
 			h.errorResponse(c, http.StatusGone, "URL has expired")
 		default:
+			h.logger.ErrorContext(ctx, "unexpected error during redirect",
+				slog.String("error", err.Error()),
+				slog.String("code", code))
 			h.errorResponse(c, http.StatusInternalServerError, "Internal server error")
 		}
 		return

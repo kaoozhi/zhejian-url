@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/infra"
+	"github.com/zhejian/url-shortener/gateway/internal/observability"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 )
 
@@ -20,6 +22,17 @@ func main() {
 
 	// Create background context for database connection
 	ctx := context.Background()
+
+	// Setup observability
+	obs, err := observability.Setup(ctx, observability.Config{
+		ServiceName: "gateway",
+		Environment: "development",
+	})
+
+	if err != nil {
+		log.Fatalf("Failed to enable observability: %v", err)
+	}
+	defer obs.Shutdown(ctx)
 
 	// Connect to database
 	DBconnectionString := cfg.Database.ConnectionString()
@@ -41,20 +54,21 @@ func main() {
 	if err := db.Ping(ctx); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
-	log.Println("Database connected successfully")
+	obs.Logger.Info("Database connected successfully")
 
 	// Verify cache connectivity
 	if err := cache.Ping(ctx).Err(); err != nil {
 		log.Fatalf("Failed to ping cache: %v", err)
 	}
-	log.Println("Cache connected successfully")
+	obs.Logger.Info("Cache connected successfully")
 
-	srv := server.NewServer(cfg, db, cache)
+	srv := server.NewServer(cfg, db, cache, obs)
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("Server starting on port %s", cfg.Server.Port)
-		log.Printf("Base URL: %s", cfg.App.BaseURL)
+		obs.Logger.Info("Server starting",
+			slog.String("port", cfg.Server.Port),
+			slog.String("base_url", cfg.App.BaseURL))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed to start: %v", err)
 		}
@@ -66,7 +80,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	obs.Logger.Info("Shutting down server...")
 
 	// Create shutdown context with 10 second timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -77,5 +91,5 @@ func main() {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
-	log.Println("Server exited gracefully")
+	obs.Logger.Info("Server exited gracefully")
 }

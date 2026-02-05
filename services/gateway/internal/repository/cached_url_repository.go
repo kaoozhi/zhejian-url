@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -23,6 +23,7 @@ type CachedURLRepository struct {
 	ttl          time.Duration
 	requestGroup *singleflight.Group
 	cacheCB      *gobreaker.CircuitBreaker
+	logger       *slog.Logger
 }
 
 // URLRepositoryInterface defines the contract for URL storage operations.
@@ -59,34 +60,69 @@ type CachedURLRepositoryOptions struct {
 }
 
 // NewCachedURLRepository creates a new cached URL repository.
-func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl time.Duration, opts ...CachedURLRepositoryOptions) *CachedURLRepository {
+func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl time.Duration, logger *slog.Logger, opts ...CachedURLRepositoryOptions) *CachedURLRepository {
 	cb := DefaultCBSettings()
 	if len(opts) > 0 && opts[0].CacheCB != nil {
 		cb = *opts[0].CacheCB
 	}
 
-	return &CachedURLRepository{
+	repo := &CachedURLRepository{
 		db:           db,
 		cache:        cache,
 		ttl:          ttl,
 		requestGroup: &singleflight.Group{},
-		cacheCB: gobreaker.NewCircuitBreaker(gobreaker.Settings{
-			Name:        "redis",
-			MaxRequests: cb.MaxRequests,
-			Interval:    cb.Interval,
-			Timeout:     cb.Timeout,
-			ReadyToTrip: func(counts gobreaker.Counts) bool {
-				return counts.ConsecutiveFailures >= cb.ConsecutiveFailures
-			},
-			IsSuccessful: func(err error) bool {
-				// redis.Nil is a cache miss, not an infrastructure failure.
-				return err == nil || err == redis.Nil
-			},
-			OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-				log.Printf("circuit breaker [%s]: %s → %s", name, from, to)
-			},
-		}),
+		logger:       logger,
 	}
+
+	repo.cacheCB = gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name:        "redis",
+		MaxRequests: cb.MaxRequests,
+		Interval:    cb.Interval,
+		Timeout:     cb.Timeout,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			shouldTrip := counts.ConsecutiveFailures >= cb.ConsecutiveFailures
+			if shouldTrip {
+				repo.logger.Error("circuit breaker about to trip",
+					slog.String("name", "redis"),
+					slog.Uint64("requests", uint64(counts.Requests)),
+					slog.Uint64("total_successes", uint64(counts.TotalSuccesses)),
+					slog.Uint64("total_failures", uint64(counts.TotalFailures)),
+					slog.Uint64("consecutive_successes", uint64(counts.ConsecutiveSuccesses)),
+					slog.Uint64("consecutive_failures", uint64(counts.ConsecutiveFailures)))
+			}
+			return shouldTrip
+		},
+		IsSuccessful: func(err error) bool {
+			// redis.Nil is a cache miss, not an infrastructure failure.
+			return err == nil || err == redis.Nil
+		},
+		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+			logLevel := slog.LevelWarn
+			message := "circuit breaker state change"
+
+			// Use different log levels based on transition
+			switch to {
+			case gobreaker.StateOpen:
+				logLevel = slog.LevelError
+				message = "circuit breaker OPENED - failing fast"
+			case gobreaker.StateClosed:
+				if from == gobreaker.StateHalfOpen {
+					logLevel = slog.LevelInfo
+					message = "circuit breaker RECOVERED"
+				}
+			case gobreaker.StateHalfOpen:
+				logLevel = slog.LevelWarn
+				message = "circuit breaker testing recovery"
+			}
+
+			repo.logger.Log(context.Background(), logLevel, message,
+				slog.String("name", name),
+				slog.String("from", from.String()),
+				slog.String("to", to.String()))
+		},
+	})
+
+	return repo
 }
 
 // GetByCode retrieves a URL by short code using cache-aside pattern.
@@ -106,9 +142,13 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 			if err := json.Unmarshal([]byte(cached), &cachedURL); err == nil {
 				return &cachedURL, nil
 			}
-			log.Println("JSON unmarshal error:", err)
+			r.logger.Error("cache deserialization error",
+				slog.Any("error", err),
+				slog.String("key", cacheKey))
 		} else if err != redis.Nil && !errors.Is(err, gobreaker.ErrOpenState) {
-			log.Println("Redis error:", err)
+			r.logger.Error("cache read error",
+				slog.Any("error", err),
+				slog.String("key", cacheKey))
 		}
 	}
 
@@ -128,7 +168,9 @@ func (r *CachedURLRepository) Create(ctx context.Context, url *model.URL) error 
 		if data, err := json.Marshal(url); err == nil {
 			r.cacheSet(ctx, cacheKey, data, r.ttl)
 		} else {
-			log.Println("JSON marshal error:", err)
+			r.logger.Error("cache serialization error on create",
+				slog.String("error", err.Error()),
+				slog.String("short_code", url.ShortCode))
 		}
 	}
 	return nil
@@ -208,7 +250,9 @@ func rewriteCache(ctx context.Context, r *CachedURLRepository, cacheKey string, 
 		if data, err := json.Marshal(url); err == nil {
 			r.cacheSet(ctx, cacheKey, data, r.ttl)
 		} else {
-			log.Println("JSON marshal error:", err)
+			r.logger.Error("cache serialization error on rewrite",
+				slog.String("error", err.Error()),
+				slog.String("key", cacheKey))
 		}
 	}
 	return url, nil
@@ -229,7 +273,9 @@ func (r *CachedURLRepository) cacheSet(ctx context.Context, key string, data int
 		return nil, r.cache.Set(ctx, key, data, ttl).Err()
 	})
 	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
-		log.Println("Redis SET error:", err)
+		r.logger.Error("cache write error",
+			slog.String("error", err.Error()),
+			slog.String("key", key))
 	}
 }
 
@@ -238,7 +284,9 @@ func (r *CachedURLRepository) cacheDel(ctx context.Context, key string) {
 		return nil, r.cache.Del(ctx, key).Err()
 	})
 	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
-		log.Println("Redis DEL error:", err)
+		r.logger.Error("cache delete error",
+			slog.String("error", err.Error()),
+			slog.String("key", key))
 	}
 }
 

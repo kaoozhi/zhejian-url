@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
+	"github.com/zhejian/url-shortener/gateway/internal/observability"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
 )
@@ -18,6 +19,7 @@ var (
 	testDB    *testutil.TestDB
 	testCache *testutil.TestCache
 	testCfg   *config.Config
+	testObs   *observability.Observability
 )
 
 func TestMain(m *testing.M) {
@@ -37,6 +39,11 @@ func TestMain(m *testing.M) {
 		panic("failed to setup test cache: " + err.Error())
 	}
 
+	testObs, err = observability.Setup(ctx, observability.Config{
+		ServiceName: "testURLService",
+		Environment: "development",
+	})
+
 	// Run tests
 	code := m.Run()
 
@@ -49,8 +56,8 @@ func TestMain(m *testing.M) {
 func TestURLService_CreateShortURL(t *testing.T) {
 	ctx := context.Background()
 	db := repository.NewURLRepository(testDB.Pool)
-	repo := repository.NewCachedURLRepository(db, nil, 0)
-	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+	repo := repository.NewCachedURLRepository(db, nil, 0, testObs.Logger)
+	service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("creates short URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -162,8 +169,8 @@ func TestURLService_CreateShortURL(t *testing.T) {
 func TestURLService_GetURL(t *testing.T) {
 	ctx := context.Background()
 	db := repository.NewURLRepository(testDB.Pool)
-	repo := repository.NewCachedURLRepository(db, nil, 0)
-	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+	repo := repository.NewCachedURLRepository(db, nil, 0, testObs.Logger)
+	service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("retrieves existing URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -222,8 +229,8 @@ func TestURLService_GetURL(t *testing.T) {
 func TestURLService_Redirect(t *testing.T) {
 	ctx := context.Background()
 	db := repository.NewURLRepository(testDB.Pool)
-	repo := repository.NewCachedURLRepository(db, nil, 0)
-	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+	repo := repository.NewCachedURLRepository(db, nil, 0, testObs.Logger)
+	service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("redirects to original URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -274,8 +281,8 @@ func TestURLService_Redirect(t *testing.T) {
 func TestURLService_DeleteURL(t *testing.T) {
 	ctx := context.Background()
 	db := repository.NewURLRepository(testDB.Pool)
-	repo := repository.NewCachedURLRepository(db, nil, 0)
-	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+	repo := repository.NewCachedURLRepository(db, nil, 0, testObs.Logger)
+	service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("deletes existing URL successfully", func(t *testing.T) {
 		testDB.Cleanup(ctx)
@@ -339,8 +346,8 @@ func TestURLService_Integration_FullWorkflow(t *testing.T) {
 	testDB.Cleanup(ctx)
 
 	db := repository.NewURLRepository(testDB.Pool)
-	repo := repository.NewCachedURLRepository(db, nil, 0)
-	service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+	repo := repository.NewCachedURLRepository(db, nil, 0, testObs.Logger)
+	service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 	t.Run("complete URL lifecycle", func(t *testing.T) {
 		// 1. Create a short URL
@@ -474,8 +481,8 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
-		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Create a URL
 		createReq := &model.CreateURLRequest{
@@ -501,8 +508,8 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
-		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Create and read a URL to cache it
 		createReq := &model.CreateURLRequest{
@@ -531,8 +538,8 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
-		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Create and cache a URL
 		createReq := &model.CreateURLRequest{
@@ -565,8 +572,8 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
-		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Try to get a non-existent URL
 		_, err := service.GetURL(ctx, "nonexistent-cache")
@@ -584,8 +591,8 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL)
-		service := NewURLService(repo, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
+		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Try to get a non-existent URL (triggers negative caching)
 		_, err := service.GetURL(ctx, "overwrite-neg")

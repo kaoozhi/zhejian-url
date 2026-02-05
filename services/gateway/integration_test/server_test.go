@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
+	"github.com/zhejian/url-shortener/gateway/internal/observability"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
 )
@@ -23,6 +24,7 @@ var (
 	testDB    *testutil.TestDB
 	testCache *testutil.TestCache
 	testCfg   *config.Config
+	testObs   *observability.Observability
 )
 
 // TestMain sets up the test environment once for all tests
@@ -47,6 +49,13 @@ func TestMain(m *testing.M) {
 
 	// testCfg
 	testCfg.Server.Port = "0"
+
+	// test observability
+	testObs, err = observability.Setup(ctx, observability.Config{
+		ServiceName: "testURLService",
+		Environment: "development",
+	})
+
 	// Run tests
 	code := m.Run()
 
@@ -58,7 +67,7 @@ func TestMain(m *testing.M) {
 
 func setupTestServer(t *testing.T) (*http.Server, string) {
 	gin.SetMode(gin.TestMode)
-	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client)
+	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, testObs)
 
 	// Create listener on localhost
 	listener, err := net.Listen("tcp", "localhost:0")
