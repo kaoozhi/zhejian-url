@@ -154,14 +154,23 @@ Add Redis caching with graceful degradation.
 Add distributed tracing and metrics instrumentation using OpenTelemetry as the unified instrumentation layer, with Prometheus for metrics storage and Jaeger for trace visualization. Setting up observability before adding more services ensures every future service is traced from day one.
 
 ### Tasks
-1. **OpenTelemetry SDK Integration**
+1. **Trace Context Propagation & Structured Logging**
+   - W3C TraceContext propagation middleware
+   - **Structured logging with `slog` (Go standard library)**
+     - JSON log format
+     - Trace ID and Span ID injected into log fields (correlate logs ↔ traces)
+     - HTTP middleware logging (method, path, status, duration)
+     - Error logging with trace context
+   - Prepares for cross-service propagation (gRPC, AMQP) in later phases
+
+2. **OpenTelemetry SDK Integration**
    - `go.opentelemetry.io/otel` SDK setup in the gateway
    - Trace spans for HTTP handlers (middleware-based)
    - Trace spans for Redis cache operations (hit/miss/error)
    - Trace spans for PostgreSQL queries
    - Span attributes: `http.method`, `http.status_code`, `db.system`, `cache.hit`, etc.
 
-2. **Prometheus Metrics via OTel**
+3. **Prometheus Metrics via OTel**
    - OTel metrics SDK with Prometheus exporter
    - `/metrics` endpoint exposed on the gateway
    - Key metrics:
@@ -170,15 +179,6 @@ Add distributed tracing and metrics instrumentation using OpenTelemetry as the u
      - `db_query_duration_seconds` (histogram)
      - `errors_total` by type (counter)
      - `circuit_breaker_state` (gauge)
-
-3. **Trace Context Propagation & Structured Logging**
-   - W3C TraceContext propagation middleware
-   - **Structured logging with `slog` (Go standard library)**
-     - JSON log format
-     - Trace ID and Span ID injected into log fields (correlate logs ↔ traces)
-     - HTTP middleware logging (method, path, status, duration)
-     - Error logging with trace context
-   - Prepares for cross-service propagation (gRPC, AMQP) in later phases
 
 4. **Infrastructure Setup**
    - OTel Collector in Docker Compose (receives OTLP, exports to Prometheus + Jaeger)

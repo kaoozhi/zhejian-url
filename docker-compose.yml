@@ -27,7 +27,7 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # Redis - Caching layer (uncomment when ready)
+  # Redis - Caching layer
   redis:
     image: redis:8-alpine
     container_name: zhejian-redis
@@ -41,6 +41,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Jaeger - Distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.50
+    container_name: zhejian-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: true
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
 
   # RabbitMQ - Message broker (uncomment when ready)
   # rabbitmq:
@@ -92,16 +103,7 @@ services:
   #   depends_on:
   #     - prometheus
 
-  # Jaeger - Distributed tracing (uncomment when ready)
-  # jaeger:
-  #   image: jaegertracing/all-in-one:1.50
-  #   container_name: zhejian-jaeger
-  #   environment:
-  #     COLLECTOR_OTLP_ENABLED: true
-  #   ports:
-  #     - "16686:16686" # Jaeger UI
-  #     - "4317:4317"   # OTLP gRPC
-  #     - "4318:4318"   # OTLP HTTP
+
 
   # Go API Gateway (uncomment when ready)
   # gateway:

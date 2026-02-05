@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 EOSQL
 
 # Run each migration file in order
-for migration in $(ls $MIGRATIONS_DIR/*.sql 2>/dev/null | sort); do
+for migration in $(ls $MIGRATIONS_DIR/*.down.sql 2>/dev/null | sort); do
     filename=$(basename $migration)
     
     # Check if migration was already applied
