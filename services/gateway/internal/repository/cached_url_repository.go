@@ -8,12 +8,17 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sony/gobreaker"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
+
+var tracer = otel.Tracer("gateway/repository")
 
 // CachedURLRepository wraps URLRepository with Redis caching.
 // It uses cache-aside for reads and write-through for writes.
@@ -133,23 +138,40 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 
 	// Try cache first
 	if r.cache != nil {
+		// Start span for cache lookup
+		ctx, span := tracer.Start(ctx, "cache.get",
+			trace.WithAttributes(
+				attribute.String("db.system", "redis"),
+				attribute.String("db.operation", "GET"),
+				attribute.String("cache.key", cacheKey),
+			),
+		)
 		cached, err := r.cacheGet(ctx, cacheKey)
 		if err == nil {
 			if cached == string(notFoundSentinel) {
+				span.SetAttributes(attribute.Bool("cache.hit", true))
+				span.SetAttributes(attribute.Bool("cache.negative", true))
+				span.End()
 				return nil, ErrNotFound
 			}
 			var cachedURL model.URL
 			if err := json.Unmarshal([]byte(cached), &cachedURL); err == nil {
+				span.SetAttributes(attribute.Bool("cache.hit", true))
+				span.End()
 				return &cachedURL, nil
 			}
+			span.RecordError(err)
 			r.logger.Error("cache deserialization error",
 				slog.Any("error", err),
 				slog.String("key", cacheKey))
 		} else if err != redis.Nil && !errors.Is(err, gobreaker.ErrOpenState) {
+			span.RecordError(err)
 			r.logger.Error("cache read error",
 				slog.Any("error", err),
 				slog.String("key", cacheKey))
 		}
+		span.SetAttributes(attribute.Bool("cache.hit", false))
+		span.End()
 	}
 
 	// Cache miss - query database with singleflight to prevent stampede
@@ -159,32 +181,70 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 // Create stores a new URL using write-through pattern.
 // It writes to DB first, then caches the result.
 func (r *CachedURLRepository) Create(ctx context.Context, url *model.URL) error {
+	ctx, span := tracer.Start(ctx, "db.insert",
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "INSERT"),
+			attribute.String("short_code", url.ShortCode),
+		),
+	)
+
 	if err := r.db.Create(ctx, url); err != nil {
+		span.RecordError(err)
+		span.End()
 		return err
 	}
+	span.End()
 
 	if r.cache != nil {
 		cacheKey := fmt.Sprintf("url:%s", url.ShortCode)
+		ctx, span := tracer.Start(ctx, "cache.set",
+			trace.WithAttributes(
+				attribute.String("db.system", "redis"),
+				attribute.String("db.operation", "SET"),
+				attribute.String("cache.key", cacheKey),
+			),
+		)
 		if data, err := json.Marshal(url); err == nil {
 			r.cacheSet(ctx, cacheKey, data, r.ttl)
 		} else {
+			span.RecordError(err)
 			r.logger.Error("cache serialization error on create",
 				slog.String("error", err.Error()),
 				slog.String("short_code", url.ShortCode))
 		}
+		span.End()
 	}
 	return nil
 }
 
 // Delete removes a URL from DB and invalidates the cache entry.
 func (r *CachedURLRepository) Delete(ctx context.Context, code string) error {
+	ctx, span := tracer.Start(ctx, "db.delete",
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", "DELETE"),
+			attribute.String("short_code", code),
+		),
+	)
 	if err := r.db.Delete(ctx, code); err != nil {
+		span.RecordError(err)
+		span.End()
 		return err
 	}
+	span.End()
 
 	if r.cache != nil {
 		cacheKey := fmt.Sprintf("url:%s", code)
+		ctx, span := tracer.Start(ctx, "cache.delete",
+			trace.WithAttributes(
+				attribute.String("db.system", "redis"),
+				attribute.String("db.operation", "DELETE"),
+				attribute.String("cache.Key", cacheKey),
+			),
+		)
 		r.cacheDel(ctx, cacheKey)
+		span.End()
 	}
 	return nil
 }
