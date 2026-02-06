@@ -47,14 +47,14 @@ func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache Ca
 	}
 }
 
-// SetupRouter configures and returns the Gin router with all route definitions.
+// RegisterRoutes registers all route definitions on the given Gin engine.
+// The caller is responsible for creating the engine and adding middleware
+// before calling this method, so middleware runs in the correct order.
 // Routes are organized into:
 //   - Health check endpoint for monitoring
 //   - API v1 endpoints for URL management (grouped under /api/v1)
 //   - Public redirect endpoint for short URL resolution
-func (h *Handler) SetupRouter() *gin.Engine {
-	r := gin.Default()
-
+func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Health check endpoint
 	r.GET("/health", h.healthCheck)
 
@@ -68,8 +68,6 @@ func (h *Handler) SetupRouter() *gin.Engine {
 
 	// Redirect route (public) - must be last to avoid conflicts
 	r.GET("/:code", h.redirect)
-
-	return r
 }
 
 // healthCheck handles GET /health

@@ -14,6 +14,7 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
 	"github.com/zhejian/url-shortener/gateway/internal/service"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
 // redisPinger adapts *redis.Client to api.CacheInterface.
@@ -24,22 +25,28 @@ func (r *redisPinger) Ping(ctx context.Context) error {
 }
 
 // NewRouter initializes all dependencies and returns a configured Gin router.
-// This is useful for testing where you don't need the full HTTP server.
+// Middleware is registered before routes so it applies to all requests.
 func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, obs *observability.Observability) *gin.Engine {
+	r := gin.Default()
+
+	// Middleware: tracing first (creates span), then logging (reads span context)
+	r.Use(otelgin.Middleware("gateway"))
+	r.Use(middleware.Logging(obs.Logger))
+
+	// Wire dependencies and register routes
 	baseRepo := repository.NewURLRepository(db)
 	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL, obs.Logger)
 	urlService := service.NewURLService(urlRepo, obs.Logger, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
 	handler := api.NewHandler(urlService, db, &redisPinger{client: cache}, obs.Logger)
-	return handler.SetupRouter()
+	handler.RegisterRoutes(r)
+
+	return r
 }
 
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
 func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, obs *observability.Observability) *http.Server {
 	router := NewRouter(cfg, db, cache, obs)
-
-	// use Logger from observability
-	router.Use(middleware.Logging(obs.Logger))
 
 	return &http.Server{
 		Addr:         ":" + cfg.Server.Port,
