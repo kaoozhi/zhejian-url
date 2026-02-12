@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"github.com/zhejian/url-shortener/gateway/internal/api"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
@@ -29,9 +30,13 @@ func (r *redisPinger) Ping(ctx context.Context) error {
 func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, obs *observability.Observability) *gin.Engine {
 	r := gin.Default()
 
-	// Middleware: tracing first (creates span), then logging (reads span context)
+	// Metrics endpoint
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
+	// Middleware: tracing first (creates span), then logging (reads span context) and metrics
 	r.Use(otelgin.Middleware("gateway"))
 	r.Use(middleware.Logging(obs.Logger))
+	r.Use(middleware.Metrics())
 
 	// Wire dependencies and register routes
 	baseRepo := repository.NewURLRepository(db)
