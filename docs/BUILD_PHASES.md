@@ -148,14 +148,14 @@ Add Redis caching with graceful degradation.
 
 ---
 
-## Phase 5: Observability Foundation (OTel + Prometheus + Jaeger)
+## Phase 5: Observability Foundation (OTel + Prometheus + Jaeger) ✅ COMPLETED
 
 ### Objective
 Add distributed tracing and metrics instrumentation using OpenTelemetry as the unified instrumentation layer, with Prometheus for metrics storage and Jaeger for trace visualization. Setting up observability before adding more services ensures every future service is traced from day one.
 
 ### Tasks
-1. **Trace Context Propagation & Structured Logging**
-   - W3C TraceContext propagation middleware
+1. **Trace Context Propagation & Structured Logging** ✅
+   - W3C TraceContext propagation middleware (`propagation.TraceContext{}`)
    - **Structured logging with `slog` (Go standard library)**
      - JSON log format
      - Trace ID and Span ID injected into log fields (correlate logs ↔ traces)
@@ -163,46 +163,57 @@ Add distributed tracing and metrics instrumentation using OpenTelemetry as the u
      - Error logging with trace context
    - Prepares for cross-service propagation (gRPC, AMQP) in later phases
 
-2. **OpenTelemetry SDK Integration**
+2. **OpenTelemetry SDK Integration** ✅
    - `go.opentelemetry.io/otel` SDK setup in the gateway
-   - Trace spans for HTTP handlers (middleware-based)
-   - Trace spans for Redis cache operations (hit/miss/error)
-   - Trace spans for PostgreSQL queries
+   - Trace spans for HTTP handlers (`otelgin` middleware)
+   - Trace spans for Redis cache operations (hit/miss/error with `cache.hit`, `cache.negative` attributes)
+   - Trace spans for PostgreSQL queries (`db.system`, `db.operation` attributes)
    - Span attributes: `http.method`, `http.status_code`, `db.system`, `cache.hit`, etc.
 
-3. **Prometheus Metrics via OTel**
-   - OTel metrics SDK with Prometheus exporter
-   - `/metrics` endpoint exposed on the gateway
+3. **Prometheus Metrics via OTel** ✅
+   - OTel metrics SDK with Prometheus exporter (`MeterProvider`)
+   - `/metrics` endpoint exposed on the gateway (`promhttp.Handler()`)
    - Key metrics:
-     - `http_request_duration_seconds` (histogram)
+     - `http_request_duration_seconds` (histogram) — via metrics middleware
+     - `http_requests_total` (counter) — via metrics middleware
      - `cache_hits_total` / `cache_misses_total` (counters)
      - `db_query_duration_seconds` (histogram)
      - `errors_total` by type (counter)
-     - `circuit_breaker_state` (gauge)
+     - `circuit_breaker_state` (gauge — observable callback)
 
-4. **Infrastructure Setup**
-   - OTel Collector in Docker Compose (receives OTLP, exports to Prometheus + Jaeger)
-   - Jaeger all-in-one for trace visualization
-   - Prometheus for metrics scraping (scrapes OTel Collector)
-   - Add to `docker-compose.prod.yml`
+4. **Infrastructure Setup** ✅
+   - Jaeger all-in-one for trace visualization (OTLP gRPC on :4317, UI on :16686)
+   - Prometheus for metrics scraping (scrapes gateway `/metrics`, UI on :9090)
+   - Added to both `docker-compose.yml` (dev) and `docker-compose.prod.yml`
+   - Direct connections (Gateway → Jaeger, Prometheus → Gateway) — OTel Collector deferred to Phase 6+ when multiple services need a central pipeline
 
 ### Deliverables
-- OTel SDK integrated in gateway (traces + metrics)
-- Prometheus `/metrics` endpoint with key application metrics
-- Jaeger UI accessible for trace inspection
-- OTel Collector configured as telemetry pipeline
-- Trace spans covering: HTTP request → cache lookup → DB query → response
-- W3C TraceContext propagation ready for future services
-- **Structured JSON logs with trace correlation using `slog`**
+- ✅ OTel SDK integrated in gateway (traces + metrics)
+- ✅ Prometheus `/metrics` endpoint with key application metrics
+- ✅ Jaeger UI accessible for trace inspection
+- ✅ Trace spans covering: HTTP request → cache lookup → DB query → response
+- ✅ W3C TraceContext propagation ready for future services
+- ✅ **Structured JSON logs with trace correlation using `slog`**
 
 ### Architecture
 ```
 Gateway (OTel SDK)
   │
-  ├─ traces (OTLP) ──→ OTel Collector ──→ Jaeger
+  ├─ traces (OTLP gRPC) ──→ Jaeger :4317
   │
-  └─ metrics (OTLP) ─→ OTel Collector ──→ Prometheus
+  └─ /metrics ──────────────→ Prometheus scrapes :8080/metrics
 ```
+
+### Implementation Details
+- `observability/tracer.go` — TracerProvider with OTLP gRPC exporter
+- `observability/meter.go` — MeterProvider with Prometheus exporter
+- `observability/logger.go` — slog JSON logger
+- `observability/observability.go` — unified Setup/Shutdown
+- `middleware/logging.go` — HTTP request logging with trace correlation
+- `middleware/metrics.go` — HTTP request duration + count metrics
+- `repository/cached_url_repository.go` — cache/DB spans + metrics
+- `observability/prometheus/prometheus.yml` — Prometheus scrape config (prod)
+- `observability/prometheus/prometheus.dev.yml` — Prometheus scrape config (dev)
 
 ---
 
@@ -687,7 +698,7 @@ Week 1-2:  ✅ Phase 1  - Core Foundation
 Week 2-3:  ✅ Phase 2  - CI/Test Automation
 Week 3-4:  ✅ Phase 3  - Build & Deployment (CD)
 Week 4-5:  ✅ Phase 4  - Caching Layer
-Week 5-6:  Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
+Week 5-6:  ✅ Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
 Week 6-7:  Phase 6  - Rust Rate Limiter + gRPC
 Week 7-8:  Phase 7  - RabbitMQ Click Analytics
 Week 8-9:  Phase 8  - Resilience Patterns + Toxiproxy
