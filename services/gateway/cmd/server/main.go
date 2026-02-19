@@ -13,6 +13,7 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
+	"github.com/zhejian/url-shortener/gateway/internal/ratelimit"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 )
 
@@ -63,7 +64,18 @@ func main() {
 	}
 	obs.Logger.Info("Cache connected successfully")
 
-	srv := server.NewServer(cfg, db, cache, obs)
+	// Setup rate limiter
+	var rateLimiter *ratelimit.Client
+	if cfg.RateLimiter.Enabled {
+		rateLimiter, err = ratelimit.NewClient(cfg.RateLimiter.Addr, cfg.RateLimiter.Timeout, obs.Logger)
+		if err != nil {
+			log.Fatalf("Failed to setup rate limiter: %v", err)
+		}
+		defer rateLimiter.Close()
+		obs.Logger.Info("Rate limiter enabled")
+	}
+
+	srv := server.NewServer(cfg, db, cache, rateLimiter, obs)
 
 	// Start server in a goroutine
 	go func() {

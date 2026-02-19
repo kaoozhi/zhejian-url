@@ -13,6 +13,7 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/middleware"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
+	"github.com/zhejian/url-shortener/gateway/internal/ratelimit"
 	"github.com/zhejian/url-shortener/gateway/internal/repository"
 	"github.com/zhejian/url-shortener/gateway/internal/service"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
@@ -27,7 +28,7 @@ func (r *redisPinger) Ping(ctx context.Context) error {
 
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // Middleware is registered before routes so it applies to all requests.
-func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, obs *observability.Observability) *gin.Engine {
+func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability) *gin.Engine {
 	r := gin.Default()
 
 	// Metrics endpoint
@@ -37,6 +38,9 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, obs *o
 	r.Use(otelgin.Middleware("gateway"))
 	r.Use(middleware.Logging(obs.Logger))
 	r.Use(middleware.Metrics())
+	if rateLimiter != nil {
+		r.Use(middleware.RateLimit(rateLimiter, obs.Logger))
+	}
 
 	// Wire dependencies and register routes
 	baseRepo := repository.NewURLRepository(db)
@@ -50,8 +54,8 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, obs *o
 
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
-func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, obs *observability.Observability) *http.Server {
-	router := NewRouter(cfg, db, cache, obs)
+func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability) *http.Server {
+	router := NewRouter(cfg, db, cache, rateLimiter, obs)
 
 	return &http.Server{
 		Addr:         ":" + cfg.Server.Port,

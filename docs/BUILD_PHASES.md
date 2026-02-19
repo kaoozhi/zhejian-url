@@ -220,58 +220,69 @@ Gateway (OTel SDK)
 ## Phase 6: Rust Rate Limiter with gRPC
 
 ### Objective
-Build a low-latency rate limiting service in Rust with gateway-first architecture.
+Build a low-latency rate limiting service in Rust with gateway-first architecture. Demonstrates cross-language gRPC, token bucket algorithm, Redis-backed distributed state, and circuit breaker fail-open pattern.
+
+### Scope (adjusted from original plan)
+- Per-IP rate limiting: 100 req/min, all endpoints
+- Fail-open on circuit breaker (no local fallback)
+- Toxiproxy wired in from day 1 for immediate chaos testing
+- API key rate limiting deferred to future
 
 ### Tasks
-1. **Architecture Pattern** 🎯
-   - Gateway-first: Client → Gateway → Rate Limiter (gRPC)
-   - Rate limiter returns (allowed: bool, retry_after: u32)
-   - Gateway enforces decision
-   - Fail-open strategy when rate limiter unavailable
+1. **Proto Definition**
+   - `proto/ratelimit.proto` at repo root (shared between Go + Rust)
+   - `RateLimitService.CheckRateLimit(ip) → (allowed, remaining, retry_after_ms)`
 
-2. **Rate Limiting Algorithms**
-   - Token bucket implementation
-   - Redis-backed token storage
-   - Per-IP and per-API-key limits
-   - Atomic operations for distributed consistency
+2. **Rust gRPC Service**
+   - `services/rate-limiter/` with tonic + tokio + redis crate
+   - Token bucket algorithm via atomic Redis Lua script (single round-trip)
+   - `REDIS_URL`, `GRPC_PORT` (50051), `RATE_LIMIT` (100/min), `BURST` (50) env vars
+   - Multi-stage Dockerfile (Rust builder → Alpine runtime)
 
-3. **gRPC Service Interface**
-   - `CheckRateLimit(ip, api_key) → RateLimitResponse`
-   - Target latency: <5ms p99
-   - Bulk check support for batch requests
+3. **Gateway Integration**
+   - Hand-written Go gRPC client stubs in `services/gateway/internal/ratelimit/`
+   - `RateLimiterConfig` in config (`RATE_LIMITER_ADDR`, `RATE_LIMITER_TIMEOUT=100ms`)
+   - Rate limit middleware: returns 429 with `Retry-After` header, fails open on error
+   - Circuit breaker: 3 consecutive failures to trip, 30s recovery
+   - Middleware order: `otelgin → Logging → Metrics → RateLimit → routes`
 
-4. **Gateway Integration**
-   - gRPC client in gateway middleware
-   - Circuit breaker for rate limiter calls
-   - Timeout: 100ms (fail open after timeout)
-   - Fallback to local in-memory rate limiting
+4. **Toxiproxy Infrastructure** 🎯
+   - Toxiproxy in Docker Compose as proxy in front of rate-limiter
+   - Gateway always connects via `toxiproxy:50052` (not directly to rate-limiter)
+   - `toxiproxy-init` one-shot container configures proxy rule on startup
+   - Zero application code changes needed for Phase 8 chaos testing
 
-5. **Toxiproxy Integration** 🎯
-   - Route Gateway → Rate Limiter through proxy
-   - Chaos scenarios:
-     - 100% connection failures
-     - 500ms latency injection
-     - 50% packet loss
-   - Verify circuit breaker and fallback behavior
+### Architecture
+```
+Client → Gateway (Go/Gin)
+              │
+              ├─ RateLimit middleware ─── gRPC 100ms timeout ──→ toxiproxy:50052
+              │       ↓ fail-open                                       │
+              │  (circuit breaker)                              rate-limiter:50051 (Rust)
+              └─ routes                                                  │
+                                                                   Redis HMSET/Lua
+```
 
 ### Deliverables
-- Working Rust rate limiter service
-- gRPC interface implemented
-- Gateway integration with circuit breaker
-- Sub-5ms p99 response time
-- Toxiproxy chaos scenarios documented
-- Fallback behavior tested (fail open vs fail closed)
+- `proto/ratelimit.proto`
+- `services/rate-limiter/` — Rust gRPC service
+- `services/gateway/internal/ratelimit/` — Go gRPC client + middleware
+- Token bucket enforcing 100 req/min per IP
+- Circuit breaker fail-open verified via Toxiproxy latency injection
+- Toxiproxy in Docker Compose (both dev + prod)
 
-### Chaos Scenarios to Document
+### Chaos Verification (available immediately after Phase 6)
 ```bash
-# Scenario 1: Rate limiter complete failure
-toxiproxy-cli toxic add rate_limiter -t timeout
+# Scenario 1: Rate limiter complete failure → fail-open
+docker exec zhejian-toxiproxy /toxiproxy-cli toxic add rate-limiter -t timeout -a timeout=0
+curl http://localhost:8080/health  # 200 (fail-open)
 
-# Scenario 2: High latency
-toxiproxy-cli toxic add rate_limiter -t latency -a latency=500
+# Scenario 2: 500ms latency → hits 100ms gRPC timeout → circuit breaker opens
+docker exec zhejian-toxiproxy /toxiproxy-cli toxic add rate-limiter -t latency -a latency=500
 
-# Scenario 3: Intermittent failures
-toxiproxy-cli toxic add rate_limiter -t limit_data -a bytes=1000
+# Scenario 3: Normal operation → 429 after 100 requests/min
+docker exec zhejian-toxiproxy /toxiproxy-cli toxic remove rate-limiter latency
+for i in $(seq 1 110); do curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/health; done
 ```
 
 ---

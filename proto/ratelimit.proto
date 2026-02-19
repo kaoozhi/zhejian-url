@@ -1,0 +1,17 @@
+syntax = "proto3";
+package ratelimit;
+option go_package = "github.com/zhejian/url-shortener/gateway/internal/ratelimit";
+
+service RateLimitService {
+    rpc CheckRateLimit(RateLimitRequest) returns (RateLimitResponse);
+}
+
+message RateLimitRequest {
+    string ip = 1;
+}
+
+message RateLimitResponse {
+    bool allowed = 1;
+    int32 remaining = 2;
+    int64  retry_after_ms = 3;
+}

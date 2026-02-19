@@ -67,7 +67,7 @@ func TestMain(m *testing.M) {
 
 func setupTestServer(t *testing.T) (*http.Server, string) {
 	gin.SetMode(gin.TestMode)
-	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, testObs)
+	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, nil, testObs)
 
 	// Create listener on localhost
 	listener, err := net.Listen("tcp", "localhost:0")
