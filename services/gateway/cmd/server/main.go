@@ -25,8 +25,9 @@ func main() {
 
 	// Setup observability
 	obs, err := observability.Setup(ctx, observability.Config{
-		ServiceName: "gateway",
-		Environment: "development",
+		ServiceName:  "gateway",
+		Environment:  "development",
+		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	})
 
 	if err != nil {

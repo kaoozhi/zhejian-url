@@ -10,6 +10,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/zhejian/url-shortener/gateway/internal/api"
@@ -22,6 +23,13 @@ func newTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelError, // Only log errors in tests
 	}))
+}
+
+// setupTestRouter creates a Gin engine and registers routes on it.
+func setupTestRouter(h *api.Handler) *gin.Engine {
+	r := gin.Default()
+	h.RegisterRoutes(r)
+	return r
 }
 
 // MockURLService mocks the service layer
@@ -87,7 +95,7 @@ func TestHandler_HealthCheck(t *testing.T) {
 		mockDB := &MockDB{shouldFail: false}
 		mockCache := &MockCache{shouldFail: false}
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
@@ -108,7 +116,7 @@ func TestHandler_HealthCheck(t *testing.T) {
 		mockDB := &MockDB{shouldFail: false}
 		mockCache := &MockCache{shouldFail: true}
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
@@ -128,7 +136,7 @@ func TestHandler_HealthCheck(t *testing.T) {
 		mockDB := &MockDB{shouldFail: true}
 		mockCache := &MockCache{shouldFail: false}
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
@@ -148,7 +156,7 @@ func TestHandler_HealthCheck(t *testing.T) {
 		mockDB := &MockDB{shouldFail: true}
 		mockCache := &MockCache{shouldFail: true}
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
@@ -180,7 +188,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		// Create request with JSON body
 		reqBody := `{"url": "https://example.com"}`
@@ -210,7 +218,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 		mockCache := &MockCache{shouldFail: false}
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		reqBody := `{invalid json}`
 		req := httptest.NewRequest("POST", "/api/v1/shorten", bytes.NewBufferString(reqBody))
@@ -238,7 +246,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		// Use a string that looks like URL but is invalid (service will validate)
 		reqBody := `{"url": "https://example.com"}`
@@ -270,7 +278,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		reqBody := `{"url": "https://example.com", "custom_alias": "taken"}`
 		req := httptest.NewRequest("POST", "/api/v1/shorten", bytes.NewBufferString(reqBody))
@@ -301,7 +309,7 @@ func TestHandler_CreateShortURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		reqBody := `{"url": "https://example.com", "custom_alias": "ab"}`
 		req := httptest.NewRequest("POST", "/api/v1/shorten", bytes.NewBufferString(reqBody))
@@ -340,7 +348,7 @@ func TestHandler_GetURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/api/v1/urls/abc123", nil)
 		w := httptest.NewRecorder()
@@ -371,7 +379,7 @@ func TestHandler_GetURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/api/v1/urls/notfound", nil)
 		w := httptest.NewRecorder()
@@ -400,7 +408,7 @@ func TestHandler_GetURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/api/v1/urls/expired", nil)
 		w := httptest.NewRecorder()
@@ -428,7 +436,7 @@ func TestHandler_DeleteURL(t *testing.T) {
 		mockService.On("DeleteURL", mock.Anything, "abc123").Return(nil)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("DELETE", "/api/v1/urls/abc123", nil)
 		w := httptest.NewRecorder()
@@ -452,7 +460,7 @@ func TestHandler_DeleteURL(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("DELETE", "/api/v1/urls/notfound", nil)
 		w := httptest.NewRecorder()
@@ -483,7 +491,7 @@ func TestHandler_Redirect(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/abc123", nil)
 		w := httptest.NewRecorder()
@@ -508,7 +516,7 @@ func TestHandler_Redirect(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/notfound", nil)
 		w := httptest.NewRecorder()
@@ -537,7 +545,7 @@ func TestHandler_Redirect(t *testing.T) {
 		)
 
 		handler := api.NewHandler(mockService, mockDB, mockCache, newTestLogger())
-		router := handler.SetupRouter()
+		router := setupTestRouter(handler)
 
 		req := httptest.NewRequest("GET", "/expired", nil)
 		w := httptest.NewRecorder()
