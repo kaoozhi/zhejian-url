@@ -19,101 +19,101 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RateLimitService_CheckRateLimit_FullMethodName = "/ratelimit.RateLimitService/CheckRateLimit"
+	RateLimiter_CheckRateLimit_FullMethodName = "/ratelimit.RateLimiter/CheckRateLimit"
 )
 
-// RateLimitServiceClient is the client API for RateLimitService service.
+// RateLimiterClient is the client API for RateLimiter service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type RateLimitServiceClient interface {
+type RateLimiterClient interface {
 	CheckRateLimit(ctx context.Context, in *RateLimitRequest, opts ...grpc.CallOption) (*RateLimitResponse, error)
 }
 
-type rateLimitServiceClient struct {
+type rateLimiterClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewRateLimitServiceClient(cc grpc.ClientConnInterface) RateLimitServiceClient {
-	return &rateLimitServiceClient{cc}
+func NewRateLimiterClient(cc grpc.ClientConnInterface) RateLimiterClient {
+	return &rateLimiterClient{cc}
 }
 
-func (c *rateLimitServiceClient) CheckRateLimit(ctx context.Context, in *RateLimitRequest, opts ...grpc.CallOption) (*RateLimitResponse, error) {
+func (c *rateLimiterClient) CheckRateLimit(ctx context.Context, in *RateLimitRequest, opts ...grpc.CallOption) (*RateLimitResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RateLimitResponse)
-	err := c.cc.Invoke(ctx, RateLimitService_CheckRateLimit_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, RateLimiter_CheckRateLimit_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// RateLimitServiceServer is the server API for RateLimitService service.
-// All implementations must embed UnimplementedRateLimitServiceServer
+// RateLimiterServer is the server API for RateLimiter service.
+// All implementations must embed UnimplementedRateLimiterServer
 // for forward compatibility.
-type RateLimitServiceServer interface {
+type RateLimiterServer interface {
 	CheckRateLimit(context.Context, *RateLimitRequest) (*RateLimitResponse, error)
-	mustEmbedUnimplementedRateLimitServiceServer()
+	mustEmbedUnimplementedRateLimiterServer()
 }
 
-// UnimplementedRateLimitServiceServer must be embedded to have
+// UnimplementedRateLimiterServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedRateLimitServiceServer struct{}
+type UnimplementedRateLimiterServer struct{}
 
-func (UnimplementedRateLimitServiceServer) CheckRateLimit(context.Context, *RateLimitRequest) (*RateLimitResponse, error) {
+func (UnimplementedRateLimiterServer) CheckRateLimit(context.Context, *RateLimitRequest) (*RateLimitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CheckRateLimit not implemented")
 }
-func (UnimplementedRateLimitServiceServer) mustEmbedUnimplementedRateLimitServiceServer() {}
-func (UnimplementedRateLimitServiceServer) testEmbeddedByValue()                          {}
+func (UnimplementedRateLimiterServer) mustEmbedUnimplementedRateLimiterServer() {}
+func (UnimplementedRateLimiterServer) testEmbeddedByValue()                     {}
 
-// UnsafeRateLimitServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to RateLimitServiceServer will
+// UnsafeRateLimiterServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to RateLimiterServer will
 // result in compilation errors.
-type UnsafeRateLimitServiceServer interface {
-	mustEmbedUnimplementedRateLimitServiceServer()
+type UnsafeRateLimiterServer interface {
+	mustEmbedUnimplementedRateLimiterServer()
 }
 
-func RegisterRateLimitServiceServer(s grpc.ServiceRegistrar, srv RateLimitServiceServer) {
-	// If the following call panics, it indicates UnimplementedRateLimitServiceServer was
+func RegisterRateLimiterServer(s grpc.ServiceRegistrar, srv RateLimiterServer) {
+	// If the following call panics, it indicates UnimplementedRateLimiterServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&RateLimitService_ServiceDesc, srv)
+	s.RegisterService(&RateLimiter_ServiceDesc, srv)
 }
 
-func _RateLimitService_CheckRateLimit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _RateLimiter_CheckRateLimit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RateLimitRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(RateLimitServiceServer).CheckRateLimit(ctx, in)
+		return srv.(RateLimiterServer).CheckRateLimit(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: RateLimitService_CheckRateLimit_FullMethodName,
+		FullMethod: RateLimiter_CheckRateLimit_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RateLimitServiceServer).CheckRateLimit(ctx, req.(*RateLimitRequest))
+		return srv.(RateLimiterServer).CheckRateLimit(ctx, req.(*RateLimitRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// RateLimitService_ServiceDesc is the grpc.ServiceDesc for RateLimitService service.
+// RateLimiter_ServiceDesc is the grpc.ServiceDesc for RateLimiter service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var RateLimitService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "ratelimit.RateLimitService",
-	HandlerType: (*RateLimitServiceServer)(nil),
+var RateLimiter_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "ratelimit.RateLimiter",
+	HandlerType: (*RateLimiterServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "CheckRateLimit",
-			Handler:    _RateLimitService_CheckRateLimit_Handler,
+			Handler:    _RateLimiter_CheckRateLimit_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

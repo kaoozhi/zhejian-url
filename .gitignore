@@ -46,3 +46,6 @@ coverage/
 tmp/
 temp/
 *.tmp
+
+# workspace files
+*.code-workspace

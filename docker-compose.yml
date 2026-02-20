@@ -105,52 +105,52 @@ services:
 
 
 
-  # Go API Gateway (uncomment when ready)
-  # gateway:
-  #   build:
-  #     context: ./services/gateway
-  #     dockerfile: Dockerfile
-  #   container_name: zhejian-gateway
-  #   environment:
-  #     - DATABASE_URL=postgres://zhejian:zhejian_secret@postgres:5432/urlshortener?sslmode=disable
-  #     - REDIS_URL=redis://redis:6379
-  #     - RABBITMQ_URL=amqp://zhejian:zhejian_secret@rabbitmq:5672/
-  #     - RATE_LIMITER_URL=http://rate-limiter:8081
-  #     - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-  #   ports:
-  #     - "8080:8080"
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_healthy
-  #     rabbitmq:
-  #       condition: service_healthy
+  # Go API Gateway
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: zhejian-gateway
+    environment:
+      - DATABASE_URL=postgres://zhejian:zhejian_secret@postgres:5432/urlshortener?sslmode=disable
+      - REDIS_URL=redis://redis:6379
+      - RATE_LIMITER_ADDR=rate-limiter:50051
+      - RATE_LIMITER_TIMEOUT=100ms
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rate-limiter:
+        condition: service_started
 
-  # Rust Rate Limiter (uncomment when ready)
-  # rate-limiter:
-  #   build:
-  #     context: ./services/rate-limiter
-  #     dockerfile: Dockerfile
-  #   container_name: zhejian-rate-limiter
-  #   environment:
-  #     - REDIS_URL=redis://redis:6379
-  #     - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-  #   ports:
-  #     - "8081:8081"
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
+  # Rust Rate Limiter
+  rate-limiter:
+    build:
+      context: .                                    # repo root — build.rs needs proto/
+      dockerfile: services/rate-limiter/Dockerfile
+    container_name: zhejian-rate-limiter
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GRPC_PORT=50051
+      - RATE_LIMIT=${RATE_LIMIT:-100}
+      - BURST=${BURST:-50}
+    expose:
+      - "50051"
+    depends_on:
+      redis:
+        condition: service_healthy
 
-  # Toxiproxy - Chaos testing proxy (uncomment when ready)
+  # Toxiproxy - Chaos testing proxy (uncomment in Phase 8)
   # toxiproxy:
   #   image: ghcr.io/shopify/toxiproxy:2.7.0
   #   container_name: zhejian-toxiproxy
   #   ports:
   #     - "8474:8474"   # API
-  #     - "5434:5434"   # Postgres proxy
-  #     - "6380:6380"   # Redis proxy
-  #     - "5673:5673"   # RabbitMQ proxy
+  #     - "50052:50052" # rate-limiter proxy
 
 volumes:
   postgres_data:

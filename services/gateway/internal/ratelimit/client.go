@@ -13,7 +13,7 @@ import (
 
 type Client struct {
 	conn    *grpc.ClientConn
-	stub    RateLimitServiceClient
+	stub    RateLimiterClient
 	cb      *gobreaker.CircuitBreaker
 	timeout time.Duration
 	logger  *slog.Logger
@@ -28,7 +28,7 @@ func NewClient(addr string, timeout time.Duration, logger *slog.Logger) (*Client
 
 	c := &Client{
 		conn:    conn,
-		stub:    NewRateLimitServiceClient(conn),
+		stub:    NewRateLimiterClient(conn),
 		timeout: timeout,
 		logger:  logger,
 	}
@@ -55,7 +55,7 @@ func (c *Client) Check(ctx context.Context, ip string) (allowed bool, remaining 
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	res, cbErr := c.cb.Execute(func() (interface{}, error) {
+	res, cbErr := c.cb.Execute(func() (any, error) {
 		return c.stub.CheckRateLimit(callCtx, &RateLimitRequest{Ip: ip})
 	})
 

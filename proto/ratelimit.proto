@@ -2,7 +2,7 @@ syntax = "proto3";
 package ratelimit;
 option go_package = "github.com/zhejian/url-shortener/gateway/internal/ratelimit";
 
-service RateLimitService {
+service RateLimiter {
     rpc CheckRateLimit(RateLimitRequest) returns (RateLimitResponse);
 }
 

@@ -135,8 +135,8 @@ const file_ratelimit_proto_rawDesc = "" +
 	"\x11RateLimitResponse\x12\x18\n" +
 	"\aallowed\x18\x01 \x01(\bR\aallowed\x12\x1c\n" +
 	"\tremaining\x18\x02 \x01(\x05R\tremaining\x12$\n" +
-	"\x0eretry_after_ms\x18\x03 \x01(\x03R\fretryAfterMs2_\n" +
-	"\x10RateLimitService\x12K\n" +
+	"\x0eretry_after_ms\x18\x03 \x01(\x03R\fretryAfterMs2Z\n" +
+	"\vRateLimiter\x12K\n" +
 	"\x0eCheckRateLimit\x12\x1b.ratelimit.RateLimitRequest\x1a\x1c.ratelimit.RateLimitResponseB=Z;github.com/zhejian/url-shortener/gateway/internal/ratelimitb\x06proto3"
 
 var (
@@ -157,8 +157,8 @@ var file_ratelimit_proto_goTypes = []any{
 	(*RateLimitResponse)(nil), // 1: ratelimit.RateLimitResponse
 }
 var file_ratelimit_proto_depIdxs = []int32{
-	0, // 0: ratelimit.RateLimitService.CheckRateLimit:input_type -> ratelimit.RateLimitRequest
-	1, // 1: ratelimit.RateLimitService.CheckRateLimit:output_type -> ratelimit.RateLimitResponse
+	0, // 0: ratelimit.RateLimiter.CheckRateLimit:input_type -> ratelimit.RateLimitRequest
+	1, // 1: ratelimit.RateLimiter.CheckRateLimit:output_type -> ratelimit.RateLimitResponse
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
