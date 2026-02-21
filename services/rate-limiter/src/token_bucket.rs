@@ -46,3 +46,62 @@ impl TokenBucket {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::redis::Redis;
+
+    // Spins up a throwaway Redis container and returns a ConnectionManager
+    // pointing at it. The container is dropped (stopped) when `_node` is dropped.
+    async fn make_conn() -> (ConnectionManager, testcontainers::ContainerAsync<Redis>) {
+        let node = Redis::default().start().await.unwrap();
+        let port = node.get_host_port_ipv4(6379).await.unwrap();
+        let url = format!("redis://127.0.0.1:{port}");
+        let client = redis::Client::open(url).unwrap();
+        let conn = ConnectionManager::new(client).await.unwrap();
+        (conn, node)
+    }
+
+    #[tokio::test]
+    async fn test_first_request_is_allowed() {
+        let (mut conn, _node) = make_conn().await;
+        let bucket = TokenBucket::new(10, 5);
+
+        let result = bucket.check(&mut conn, "1.1.1.1").await.unwrap();
+        assert!(result.allowed);
+        assert_eq!(result.remaining, 4); // burst=5, consumed 1
+        assert_eq!(result.retry_after_ms, 0);
+    }
+
+    #[tokio::test]
+    async fn test_bucket_exhaustion_returns_429() {
+        let (mut conn, _node) = make_conn().await;
+        let burst = 3u32;
+        let bucket = TokenBucket::new(10, burst);
+
+        // Exhaust all tokens
+        for _ in 0..burst {
+            let r = bucket.check(&mut conn, "2.2.2.2").await.unwrap();
+            assert!(r.allowed);
+        }
+
+        // Next request must be denied
+        let result = bucket.check(&mut conn, "2.2.2.2").await.unwrap();
+        assert!(!result.allowed);
+        assert_eq!(result.remaining, 0);
+        assert!(result.retry_after_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn test_remaining_decrements() {
+        let (mut conn, _node) = make_conn().await;
+        let bucket = TokenBucket::new(10, 5);
+
+        let r1 = bucket.check(&mut conn, "3.3.3.3").await.unwrap();
+        let r2 = bucket.check(&mut conn, "3.3.3.3").await.unwrap();
+
+        assert!(r1.remaining > r2.remaining);
+    }
+}
