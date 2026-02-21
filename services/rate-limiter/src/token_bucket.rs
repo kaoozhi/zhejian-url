@@ -1,4 +1,4 @@
-use redis::{aio::ConnectionManager, Script};
+use redis::{Script, aio::ConnectionManager};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct BucketResult {
@@ -28,9 +28,7 @@ impl TokenBucket {
         ip: &str,
     ) -> anyhow::Result<BucketResult> {
         let key = format!("rl:{ip}");
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
 
         let result: (i64, i64, i64) = self
             .script
