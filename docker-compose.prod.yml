@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${DB_USER:-zhejian}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-zhejian} -d ${DB_NAME:-urlshortener}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -37,6 +37,21 @@ services:
       timeout: 5s
       retries: 5
 
+  rate-limiter:
+    build:
+      context: .
+      dockerfile: services/rate-limiter/Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379
+      GRPC_PORT: "50051"
+      RATE_LIMIT: ${RATE_LIMIT:-100}
+      BURST: ${BURST:-50}
+    expose:
+      - "50051"
+    depends_on:
+      redis:
+        condition: service_healthy
+
   gateway:
     build: ./services/gateway
     environment:
@@ -49,8 +64,9 @@ services:
       CACHE_HOST: ${CACHE_HOST}
       CACHE_PORT: ${CACHE_PORT}
       CACHE_TTL: ${CACHE_TTL}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
-
+      RATE_LIMITER_ADDR: rate-limiter:50051
+      RATE_LIMITER_TIMEOUT: ${RATE_LIMITER_TIMEOUT:-100ms}
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
     ports:
       - "8080:8080"
     depends_on:
@@ -60,6 +76,10 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      rate-limiter:
+        condition: service_started
+      jaeger:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s

@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  integration:
     runs-on: ubuntu-latest
 
     steps:
@@ -15,7 +15,7 @@ jobs:
 
       - name: Create .env file
         run: |
-          cat > .env << EOF
+          cat > .env << 'EOF'
           DB_HOST=postgres
           DB_PORT=5432
           DB_USER=zhejian
@@ -25,19 +25,34 @@ jobs:
           CACHE_HOST=redis
           CACHE_PORT=6379
           CACHE_TTL=5
+          RATE_LIMITER_ADDR=rate-limiter:50051
+          RATE_LIMITER_TIMEOUT=100ms
+          RATE_LIMIT=100
+          BURST=50
           EOF
 
-      - name: Run docker compose
+      - name: Start services
         uses: hoverkraft-tech/compose-action@05da55b2bb8a5a759d1c4732095044bd9018c050 # v2.4.3
         with:
             compose-file: "./docker-compose.prod.yml"
             up-flags: "-d"
 
-      - name: Wait for services
+      - name: Wait for gateway to be healthy
         run: |
-          echo "Waiting for services..."
-          sleep 15
-          docker compose -f docker-compose.prod.yml ps
+          echo "Waiting for gateway..."
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://localhost:8080/health > /dev/null; then
+              echo "✓ Gateway is healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "✗ Gateway health check timed out after 60s"
+              docker compose -f docker-compose.prod.yml ps
+              docker compose -f docker-compose.prod.yml logs
+              exit 1
+            fi
+            sleep 2
+          done
 
       - name: Verify migrations
         run: |
@@ -47,22 +62,78 @@ jobs:
           if echo "$LOGS" | grep -q "Migrations completed!"; then
             echo "✓ Migrations completed successfully"
           else
-            echo "Migration failed - 'Migrations completed!' not found in logs"
+            echo "✗ Migration failed - 'Migrations completed!' not found in logs"
             exit 1
           fi
 
-      - name: Smoke test
+      - name: Smoke test - health endpoint
         run: |
-          for i in {1..10}; do
-            if curl --fail --silent http://localhost:8080/health; then
-              echo "✓ Health check passed"
-              exit 0
+          RESPONSE=$(curl --fail --silent http://localhost:8080/health)
+          echo "$RESPONSE"
+          echo "✓ Health check passed"
+
+      - name: Smoke test - create short URL
+        id: shorten
+        run: |
+          RESPONSE=$(curl --fail --silent \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"url": "https://example.com/ci-test"}' \
+            http://localhost:8080/api/v1/shorten)
+          echo "$RESPONSE"
+          CODE=$(echo "$RESPONSE" | jq -r '.short_code')
+          if [ -z "$CODE" ] || [ "$CODE" = "null" ]; then
+            echo "✗ Failed to extract short_code from response"
+            exit 1
+          fi
+          echo "short_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "✓ Short URL created: $CODE"
+
+      - name: Smoke test - get URL metadata
+        run: |
+          CODE="${{ steps.shorten.outputs.short_code }}"
+          RESPONSE=$(curl --fail --silent "http://localhost:8080/api/v1/urls/$CODE")
+          echo "$RESPONSE"
+          ORIGINAL=$(echo "$RESPONSE" | jq -r '.original_url')
+          if [ "$ORIGINAL" != "https://example.com/ci-test" ]; then
+            echo "✗ original_url mismatch: expected 'https://example.com/ci-test', got '$ORIGINAL'"
+            exit 1
+          fi
+          echo "✓ URL metadata correct"
+
+      - name: Smoke test - redirect
+        run: |
+          CODE="${{ steps.shorten.outputs.short_code }}"
+          HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" "http://localhost:8080/$CODE")
+          if [ "$HTTP_CODE" != "301" ]; then
+            echo "✗ Expected 301, got $HTTP_CODE"
+            exit 1
+          fi
+          echo "✓ Redirect returns 301"
+
+      - name: Smoke test - rate limit enforced (429)
+        run: |
+          # Fire rapid requests to exhaust the burst capacity (BURST=50).
+          # All requests from the runner share the same IP, so the token bucket
+          # drains quickly. The 51st consecutive request should be rate-limited.
+          got_429=false
+          for i in $(seq 1 60); do
+            HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+            if [ "$HTTP_CODE" = "429" ]; then
+              got_429=true
+              echo "✓ Rate limit enforced after $i requests (got 429)"
+              break
             fi
-            sleep 2
           done
-          echo "Health check failed"
-          docker compose -f docker-compose.prod.yml logs gateway
-          exit 1
+          if [ "$got_429" = false ]; then
+            echo "✗ Rate limit not enforced — no 429 received in 60 requests"
+            docker compose -f docker-compose.prod.yml logs rate-limiter
+            exit 1
+          fi
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.prod.yml logs --tail=100
 
       - name: Cleanup
         if: always()
