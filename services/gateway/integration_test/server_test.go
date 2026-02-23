@@ -25,6 +25,7 @@ var (
 	testCache *testutil.TestCache
 	testCfg   *config.Config
 	testObs   *observability.Observability
+	testRL    *mockRateLimiterServer
 )
 
 // TestMain sets up the test environment once for all tests
