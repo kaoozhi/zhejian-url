@@ -51,7 +51,10 @@ mod tests {
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
-    async fn make_service(rate: u32, burst: u32) -> (RateLimitService, testcontainers::ContainerAsync<Redis>) {
+    async fn make_service(
+        rate: u32,
+        burst: u32,
+    ) -> (RateLimitService, testcontainers::ContainerAsync<Redis>) {
         let node = Redis::default().start().await.unwrap();
         let port = node.get_host_port_ipv4(6379).await.unwrap();
         let client = redis::Client::open(format!("redis://127.0.0.1:{port}")).unwrap();
@@ -62,7 +65,9 @@ mod tests {
     #[tokio::test]
     async fn test_allowed_response_fields() {
         let (svc, _node) = make_service(10, 5).await;
-        let req = Request::new(RateLimitRequest { ip: "1.1.1.1".into() });
+        let req = Request::new(RateLimitRequest {
+            ip: "1.1.1.1".into(),
+        });
 
         let resp = svc.check_rate_limit(req).await.unwrap().into_inner();
 
@@ -77,11 +82,15 @@ mod tests {
 
         // Exhaust the bucket
         for _ in 0..3 {
-            let req = Request::new(RateLimitRequest { ip: "2.2.2.2".into() });
+            let req = Request::new(RateLimitRequest {
+                ip: "2.2.2.2".into(),
+            });
             svc.check_rate_limit(req).await.unwrap();
         }
 
-        let req = Request::new(RateLimitRequest { ip: "2.2.2.2".into() });
+        let req = Request::new(RateLimitRequest {
+            ip: "2.2.2.2".into(),
+        });
         let resp = svc.check_rate_limit(req).await.unwrap().into_inner();
 
         assert!(!resp.allowed);
@@ -94,10 +103,20 @@ mod tests {
         let (svc, _node) = make_service(10, 5).await;
 
         // Two different IPs must have independent buckets
-        let r1 = svc.check_rate_limit(Request::new(RateLimitRequest { ip: "3.3.3.3".into() }))
-            .await.unwrap().into_inner();
-        let r2 = svc.check_rate_limit(Request::new(RateLimitRequest { ip: "4.4.4.4".into() }))
-            .await.unwrap().into_inner();
+        let r1 = svc
+            .check_rate_limit(Request::new(RateLimitRequest {
+                ip: "3.3.3.3".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let r2 = svc
+            .check_rate_limit(Request::new(RateLimitRequest {
+                ip: "4.4.4.4".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
 
         // Both fresh — both allowed with full remaining
         assert!(r1.allowed);
