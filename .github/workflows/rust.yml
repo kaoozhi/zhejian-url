@@ -37,10 +37,30 @@ jobs:
         working-directory: services/rate-limiter
         run: cargo clippy -- -D warnings
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Test
+        working-directory: services/rate-limiter
+        run: cargo nextest run --locked
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/rate-limiter
+
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin --locked
 
-      - name: Test with coverage
+      - name: Coverage
         working-directory: services/rate-limiter
         run: cargo tarpaulin --locked --out xml
 
