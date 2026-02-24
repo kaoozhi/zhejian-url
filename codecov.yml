@@ -19,3 +19,4 @@ coverage:
   ignore:
     - "services/gateway/internal/testutil/*"
     - "services/gateway/cmd/server/*"
+    - "services/gateway/internal/ratelimit/*.pb.go"
