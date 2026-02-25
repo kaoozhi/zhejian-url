@@ -16,6 +16,7 @@ type Config struct {
 	App         AppConfig
 	Cache       CacheConfig
 	RateLimiter RateLimiterConfig
+	Analytics   AnalyticsConfig
 }
 
 // ServerConfig holds HTTP server configuration
@@ -62,10 +63,16 @@ type RateLimiterConfig struct {
 	Enabled bool
 }
 
+type AnalyticsConfig struct {
+	AMQPURL string // e.g. "amqp://guest:guest@rabbitmq:5672/" — empty means disabled
+	Enabled bool
+}
+
 // Load loads configuration from environment variables
 func Load() *Config {
 	_ = godotenv.Load("../../../../.env")
 	rateLimiterAddr := getEnv("RATE_LIMITER_ADDR", "")
+	amqpURL := getEnv("AMQP_URL", "")
 	return &Config{
 		Server: ServerConfig{
 			Port: getEnv("PORT", "8080"),
@@ -100,6 +107,10 @@ func Load() *Config {
 			Addr:    rateLimiterAddr,
 			Timeout: getEnvDuration("RATE_LIMITER_TIMEOUT", 100*time.Millisecond),
 			Enabled: rateLimiterAddr != "",
+		},
+		Analytics: AnalyticsConfig{
+			AMQPURL: amqpURL,
+			Enabled: amqpURL != "",
 		},
 	}
 }
