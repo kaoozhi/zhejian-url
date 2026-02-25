@@ -125,7 +125,7 @@ jobs:
               break
             fi
           done
-          if [ "$got_429" = false ]; then
+          if [ "$got_429" = "false" ]; then
             echo "✗ Rate limit not enforced — no 429 received in 60 requests"
             docker compose -f docker-compose.prod.yml logs rate-limiter
             exit 1

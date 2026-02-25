@@ -105,33 +105,6 @@ services:
 
 
 
-  # Go API Gateway
-  gateway:
-    build:
-      context: ./services/gateway
-      dockerfile: Dockerfile
-    container_name: zhejian-gateway
-    environment:
-      - DATABASE_URL=postgres://zhejian:zhejian_secret@postgres:5432/urlshortener?sslmode=disable
-      - REDIS_URL=redis://redis:6379
-      - RATE_LIMITER_ADDR=rate-limiter:50051
-      - RATE_LIMITER_TIMEOUT=100ms
-      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rate-limiter:
-        condition: service_started
-
   # Rust Rate Limiter
   rate-limiter:
     build:
@@ -149,13 +122,39 @@ services:
       redis:
         condition: service_healthy
 
-  # Toxiproxy - Chaos testing proxy (uncomment in Phase 8)
-  # toxiproxy:
-  #   image: ghcr.io/shopify/toxiproxy:2.7.0
-  #   container_name: zhejian-toxiproxy
-  #   ports:
-  #     - "8474:8474"   # API
-  #     - "50052:50052" # rate-limiter proxy
+  # Go API Gateway
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: zhejian-gateway
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=zhejian
+      - DB_PASSWORD=zhejian_secret
+      - DB_NAME=urlshortener
+      - DB_SSLMODE=disable
+      - CACHE_HOST=redis
+      - CACHE_PORT=6379
+      - CACHE_TTL=5
+      - RATE_LIMITER_ADDR=rate-limiter:50051
+      - RATE_LIMITER_TIMEOUT=100ms
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rate-limiter:
+        condition: service_started
 
 volumes:
   postgres_data:

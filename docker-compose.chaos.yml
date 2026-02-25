@@ -1,0 +1,50 @@
+# Chaos testing overlay — use on top of docker-compose.yml
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.chaos.yml up
+#
+# This overlay adds Toxiproxy in front of the rate-limiter and rewires the
+# gateway to go through it. Zero changes to application code.
+#
+# Chaos commands (proxy name = rate-limiter):
+#   # Inject 500ms latency → exceeds 100ms gRPC timeout → circuit breaker opens → fail-open
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t latency -a latency=500 rate-limiter
+#
+#   # Complete failure → immediate fail-open
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t timeout -a timeout=0 rate-limiter
+#
+#   # Inspect active toxics
+#   docker exec zhejian-toxiproxy /toxiproxy-cli inspect rate-limiter
+#
+#   # Remove toxic (use auto-name: latency_downstream / timeout_downstream)
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic delete -n latency_downstream rate-limiter
+
+services:
+  # Toxiproxy - transparent TCP proxy for chaos injection
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.7.0
+    container_name: zhejian-toxiproxy
+    ports:
+      - "8474:8474"   # Toxiproxy REST API (for CLI chaos commands)
+      - "50052:50052" # rate-limiter proxy (gateway connects here)
+
+  # One-shot init: registers the rate-limiter proxy rule on startup
+  toxiproxy-init:
+    image: curlimages/curl:8.11.1
+    container_name: zhejian-toxiproxy-init
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -c
+      - "until curl -sf http://toxiproxy:8474/proxies > /dev/null; do sleep 1; done && curl -s -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json' -d '{\"name\":\"rate-limiter\",\"listen\":\"0.0.0.0:50052\",\"upstream\":\"rate-limiter:50051\"}' && echo 'Toxiproxy configured: rate-limiter:50051 -> toxiproxy:50052'"
+    depends_on:
+      - toxiproxy
+    restart: "no"
+
+  # Override gateway: route rate-limiter calls through toxiproxy
+  gateway:
+    environment:
+      - RATE_LIMITER_ADDR=toxiproxy:50052
+    depends_on:
+      toxiproxy-init:
+        condition: service_completed_successfully
