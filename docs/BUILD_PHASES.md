@@ -217,7 +217,7 @@ Gateway (OTel SDK)
 
 ---
 
-## Phase 6: Rust Rate Limiter with gRPC
+## Phase 6: Rust Rate Limiter with gRPC ✅ COMPLETED
 
 ### Objective
 Build a low-latency rate limiting service in Rust with gateway-first architecture. Demonstrates cross-language gRPC, token bucket algorithm, Redis-backed distributed state, and circuit breaker fail-open pattern.
@@ -264,12 +264,14 @@ Client → Gateway (Go/Gin)
 ```
 
 ### Deliverables
-- `proto/ratelimit.proto`
-- `services/rate-limiter/` — Rust gRPC service
-- `services/gateway/internal/ratelimit/` — Go gRPC client + middleware
-- Token bucket enforcing 100 req/min per IP
-- Circuit breaker fail-open verified via Toxiproxy latency injection
-- Toxiproxy in Docker Compose (both dev + prod)
+- ✅ `proto/ratelimit.proto`
+- ✅ `services/rate-limiter/` — Rust gRPC service
+- ✅ `services/gateway/internal/ratelimit/` — Go gRPC client + middleware
+- ✅ Token bucket enforcing 100 req/min per IP
+- ✅ Circuit breaker fail-open verified via Toxiproxy latency injection
+- ✅ `docker-compose.chaos.yml` — Toxiproxy overlay (composable with dev + prod stacks)
+- ✅ `scripts/chaos-test.sh` — automated chaos scenarios (latency injection → circuit open → recovery)
+- ✅ `.github/workflows/chaos.yml` — CI chaos workflow (manual + auto on PR/push to main)
 
 ### Chaos Verification (available immediately after Phase 6)
 ```bash
@@ -710,7 +712,7 @@ Week 2-3:  ✅ Phase 2  - CI/Test Automation
 Week 3-4:  ✅ Phase 3  - Build & Deployment (CD)
 Week 4-5:  ✅ Phase 4  - Caching Layer
 Week 5-6:  ✅ Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
-Week 6-7:  Phase 6  - Rust Rate Limiter + gRPC
+Week 6-7:  ✅ Phase 6  - Rust Rate Limiter + gRPC
 Week 7-8:  Phase 7  - RabbitMQ Click Analytics
 Week 8-9:  Phase 8  - Resilience Patterns + Toxiproxy
 Week 9:    Phase 9  - Load Testing
