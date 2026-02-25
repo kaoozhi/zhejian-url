@@ -1,0 +1,47 @@
+name: Chaos
+
+on:
+  # Manual trigger: run from the GitHub Actions UI or gh CLI
+  #   gh workflow run chaos.yml
+  workflow_dispatch: {}
+
+  pull_request:
+    branches: [main]
+
+  push:
+    branches: [main]
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'EOF'
+          DB_HOST=postgres
+          DB_PORT=5432
+          DB_USER=zhejian
+          DB_PASSWORD=zhejian_secret
+          DB_NAME=urlshortener
+          DB_SSLMODE=disable
+          CACHE_HOST=redis
+          CACHE_PORT=6379
+          CACHE_TTL=5
+          RATE_LIMITER_ADDR=rate-limiter:50051
+          RATE_LIMITER_TIMEOUT=100ms
+          RATE_LIMIT=100
+          BURST=50
+          EOF
+
+      - name: Run chaos test
+        run: |
+          chmod +x scripts/chaos-test.sh
+          ./scripts/chaos-test.sh prod
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.prod.yml -f docker-compose.chaos.yml logs --tail=150

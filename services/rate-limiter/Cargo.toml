@@ -1,0 +1,19 @@
+[package]
+name = "rate-limiter"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tonic        = "0.12"   # gRPC framework
+prost        = "0.13"   # protobuf runtime (used by tonic)
+tokio        = { version = "1", features = ["full"] }
+redis        = { version = "0.26", features = ["tokio-comp", "connection-manager"] }  # async redis
+anyhow       = "1"      # error handling
+
+[dev-dependencies]
+testcontainers          = "0.27"
+testcontainers-modules  = { version = "0.15", features = ["redis"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+protox       = "0.7"    # bundles protoc — no system install needed

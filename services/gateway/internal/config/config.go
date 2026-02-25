@@ -11,10 +11,11 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	App      AppConfig
-	Cache    CacheConfig
+	Server      ServerConfig
+	Database    DatabaseConfig
+	App         AppConfig
+	Cache       CacheConfig
+	RateLimiter RateLimiterConfig
 }
 
 // ServerConfig holds HTTP server configuration
@@ -55,10 +56,16 @@ type AppConfig struct {
 	MinAliasLen      int
 }
 
+type RateLimiterConfig struct {
+	Addr    string
+	Timeout time.Duration // per-call gRPC timeout, default 100ms
+	Enabled bool
+}
+
 // Load loads configuration from environment variables
 func Load() *Config {
 	_ = godotenv.Load("../../../../.env")
-
+	rateLimiterAddr := getEnv("RATE_LIMITER_ADDR", "")
 	return &Config{
 		Server: ServerConfig{
 			Port: getEnv("PORT", "8080"),
@@ -88,6 +95,11 @@ func Load() *Config {
 			ShortCodeRetries: getEnvInt("SHORT_CODE_MAX_RETRIES", 3),
 			MaxAliasLen:      20,
 			MinAliasLen:      3,
+		},
+		RateLimiter: RateLimiterConfig{
+			Addr:    rateLimiterAddr,
+			Timeout: getEnvDuration("RATE_LIMITER_TIMEOUT", 100*time.Millisecond),
+			Enabled: rateLimiterAddr != "",
 		},
 	}
 }

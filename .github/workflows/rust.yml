@@ -1,0 +1,71 @@
+name: Rust
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [main]
+  # Manual trigger for debugging or reruns
+  workflow_dispatch: {}
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/rate-limiter
+
+      - name: Format check
+        working-directory: services/rate-limiter
+        run: cargo fmt --check
+
+      - name: Build
+        working-directory: services/rate-limiter
+        run: cargo build --locked
+
+      - name: Clippy
+        working-directory: services/rate-limiter
+        run: cargo clippy -- -D warnings
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Test
+        working-directory: services/rate-limiter
+        run: cargo nextest run --locked
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/rate-limiter
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Coverage
+        working-directory: services/rate-limiter
+        run: cargo tarpaulin --locked --out xml
+
+      - name: Upload results to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: services/rate-limiter/cobertura.xml
