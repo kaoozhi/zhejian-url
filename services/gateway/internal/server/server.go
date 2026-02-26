@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
+	"github.com/zhejian/url-shortener/gateway/internal/analytics"
 	"github.com/zhejian/url-shortener/gateway/internal/api"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/middleware"
@@ -28,7 +29,7 @@ func (r *redisPinger) Ping(ctx context.Context) error {
 
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // Middleware is registered before routes so it applies to all requests.
-func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability) *gin.Engine {
+func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *gin.Engine {
 	r := gin.Default()
 
 	// Metrics endpoint
@@ -46,7 +47,7 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLi
 	baseRepo := repository.NewURLRepository(db)
 	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL, obs.Logger)
 	urlService := service.NewURLService(urlRepo, obs.Logger, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
-	handler := api.NewHandler(urlService, db, &redisPinger{client: cache}, obs.Logger)
+	handler := api.NewHandler(urlService, db, &redisPinger{client: cache}, obs.Logger, pub)
 	handler.RegisterRoutes(r)
 
 	return r
@@ -54,8 +55,8 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLi
 
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
-func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability) *http.Server {
-	router := NewRouter(cfg, db, cache, rateLimiter, obs)
+func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
+	router := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
 
 	return &http.Server{
 		Addr:         ":" + cfg.Server.Port,

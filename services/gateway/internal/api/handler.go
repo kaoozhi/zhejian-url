@@ -5,8 +5,10 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zhejian/url-shortener/gateway/internal/analytics"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 	"github.com/zhejian/url-shortener/gateway/internal/service"
 )
@@ -19,6 +21,7 @@ type Handler struct {
 	db         DBInterface                 // Database connection for health checks
 	cache      CacheInterface              // Cache conneciton for health checks
 	logger     *slog.Logger                // Structured logger for validation/error logging
+	publisher *analytics.Publisher // Analytics click event publisher (nil when disabled)
 }
 
 // DBInterface defines the database operations needed by the handler.
@@ -38,12 +41,13 @@ type CacheInterface interface {
 
 // NewHandler creates a new handler instance with the provided dependencies.
 // It accepts interfaces to enable dependency injection and facilitate testing.
-func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache CacheInterface, logger *slog.Logger) *Handler {
+func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache CacheInterface, logger *slog.Logger, publisher *analytics.Publisher) *Handler {
 	return &Handler{
 		urlService: urlService,
 		db:         db,
 		cache:      cache,
 		logger:     logger,
+		publisher:  publisher,
 	}
 }
 
@@ -246,6 +250,16 @@ func (h *Handler) redirect(c *gin.Context) {
 
 	// Perform HTTP 301 redirect to original URL
 	c.Redirect(http.StatusMovedPermanently, url)
+
+	// Publish click event after responding — fire-and-forget in a goroutine
+	// so it never adds latency to the redirect response.
+	// Referer is the page the user came from (HTTP Referer header), not the destination URL.
+	go h.publisher.Publish(ctx, analytics.ClickEvent{
+		ShortCode: code,
+		ClickedAt: time.Now().UTC(),
+		IP:        c.ClientIP(),
+		Referer:   c.GetHeader("Referer"),
+	})
 }
 
 // errorResponse sends a standardized JSON error response.

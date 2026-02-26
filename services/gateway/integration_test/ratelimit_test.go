@@ -71,7 +71,7 @@ func setupTestServerWithRL(t *testing.T, rlAddr string) (*http.Server, string) {
 	t.Cleanup(func() { rlClient.Close() })
 
 	gin.SetMode(gin.TestMode)
-	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, rlClient, testObs)
+	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, rlClient, testObs, nil)
 
 	lis, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
