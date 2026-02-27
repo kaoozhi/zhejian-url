@@ -170,7 +170,7 @@ func (c *Consumer) flush(ctx context.Context, deliveries []amqp.Delivery) error 
 		if err := json.Unmarshal(d.Body, &e); err != nil {
 			c.logger.Warn("analytics-worker: malformed message, sending to DLQ",
 				slog.String("error", err.Error()))
-			d.Nack(false, false) // multiple=false (just this one), requeue=false → DLQ
+			_ = d.Nack(false, false) // multiple=false (just this one), requeue=false → DLQ
 			continue
 		}
 		events = append(events, repository.ClickEvent{
@@ -196,7 +196,7 @@ func (c *Consumer) flush(ctx context.Context, deliveries []amqp.Delivery) error 
 	// One Ack with multiple=true covers every unacked delivery up to and
 	// including deliveries[last].DeliveryTag — equivalent to acking each one
 	// individually but cheaper (single AMQP frame).
-	deliveries[len(deliveries)-1].Ack(true)
+	_ = deliveries[len(deliveries)-1].Ack(true)
 	c.logger.Info("analytics-worker: flushed batch", slog.Int("events", len(events)))
 	return nil
 }

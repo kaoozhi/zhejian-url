@@ -21,7 +21,7 @@ type Handler struct {
 	db         DBInterface                 // Database connection for health checks
 	cache      CacheInterface              // Cache conneciton for health checks
 	logger     *slog.Logger                // Structured logger for validation/error logging
-	publisher *analytics.Publisher // Analytics click event publisher (nil when disabled)
+	publisher  *analytics.Publisher        // Analytics click event publisher (nil when disabled)
 }
 
 // DBInterface defines the database operations needed by the handler.
