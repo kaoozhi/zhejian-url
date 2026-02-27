@@ -78,10 +78,15 @@ func (c *Consumer) Setup() error {
 	return ch.QueueBind(queueName, routingKey, exchangeName, false, nil)
 }
 
-// Run starts the consume loop. Blocks until ctx is cancelled (graceful shutdown)
-// or the AMQP channel closes unexpectedly.
+// Run starts the consume loop. Blocks until ctx is cancelled (graceful shutdown),
+// the AMQP channel closes unexpectedly, or a DB error causes a fatal flush failure.
 //
-// On shutdown, any buffered but un-flushed messages are flushed before returning.
+// On a DB error, Run returns the error immediately without acking or nacking the
+// current batch. The caller (main.go) should exit, which closes the AMQP connection
+// and causes RabbitMQ to requeue all unacked messages automatically.
+// docker-compose restart: on-failure then restarts the worker to retry.
+//
+// On shutdown, any buffered un-flushed messages are flushed before returning.
 func (c *Consumer) Run(ctx context.Context) error {
 	ch, err := c.conn.Channel()
 	if err != nil {
@@ -108,9 +113,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Graceful shutdown: flush whatever is buffered before exiting.
+			// Graceful shutdown: best-effort flush of whatever is buffered.
 			if len(batch) > 0 {
-				c.flush(ctx, batch)
+				return c.flush(ctx, batch)
 			}
 			return nil
 
@@ -121,15 +126,19 @@ func (c *Consumer) Run(ctx context.Context) error {
 			}
 			batch = append(batch, d)
 			if len(batch) >= c.batchSize {
-				c.flush(ctx, batch)
-				batch = batch[:0]           // reset without reallocating
+				if err := c.flush(ctx, batch); err != nil {
+					return err // DB error → exit → RabbitMQ requeues unacked messages
+				}
+				batch = batch[:0]             // reset without reallocating
 				ticker.Reset(c.flushInterval) // restart the timeout after a size-triggered flush
 			}
 
 		case <-ticker.C:
 			// Timeout flush — drain whatever accumulated since the last flush.
 			if len(batch) > 0 {
-				c.flush(ctx, batch)
+				if err := c.flush(ctx, batch); err != nil {
+					return err // DB error → exit → RabbitMQ requeues unacked messages
+				}
 				batch = batch[:0]
 			}
 		}
@@ -141,11 +150,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 // Ack strategy: a single Ack(multiple=true) on the last delivery tag acks the
 // entire batch in one AMQP frame, matching the single DB round-trip.
 //
-// Nack strategy:
+// Nack strategy (two cases):
 //   - Malformed JSON → individual Nack(requeue=false) → routed to DLQ.
-//   - DB error → Nack(requeue=false) for the whole batch → all go to DLQ.
-//     This prevents an infinite retry loop if the DB is persistently unhealthy.
-func (c *Consumer) flush(ctx context.Context, deliveries []amqp.Delivery) {
+//     The message itself is broken; no amount of retrying will fix it.
+//   - DB error → return the error WITHOUT acking or nacking.
+//     The caller exits, the AMQP connection closes, and RabbitMQ automatically
+//     requeues all unacked messages. docker-compose restart: on-failure retries
+//     once the DB is healthy again — no tight retry loop, no data loss.
+func (c *Consumer) flush(ctx context.Context, deliveries []amqp.Delivery) error {
 	events := make([]repository.ClickEvent, 0, len(deliveries))
 
 	for _, d := range deliveries {
@@ -170,17 +182,15 @@ func (c *Consumer) flush(ctx context.Context, deliveries []amqp.Delivery) {
 	}
 
 	if len(events) == 0 {
-		return
+		return nil
 	}
 
 	if err := c.repo.BulkInsert(ctx, events); err != nil {
-		c.logger.Error("analytics-worker: bulk insert failed, sending batch to DLQ",
+		c.logger.Error("analytics-worker: bulk insert failed, exiting for restart",
 			slog.String("error", err.Error()),
 			slog.Int("batch_size", len(events)))
-		for _, d := range deliveries {
-			d.Nack(false, false)
-		}
-		return
+		// Do NOT ack or nack — closing the connection requeues unacked messages.
+		return err
 	}
 
 	// One Ack with multiple=true covers every unacked delivery up to and
@@ -188,4 +198,5 @@ func (c *Consumer) flush(ctx context.Context, deliveries []amqp.Delivery) {
 	// individually but cheaper (single AMQP frame).
 	deliveries[len(deliveries)-1].Ack(true)
 	c.logger.Info("analytics-worker: flushed batch", slog.Int("events", len(events)))
+	return nil
 }
