@@ -289,79 +289,107 @@ for i in $(seq 1 110); do curl -s -o /dev/null -w "%{http_code}\n" localhost:808
 
 ---
 
-## Phase 7: Async Click Analytics with RabbitMQ
+## Phase 7: Async Click Analytics with RabbitMQ ✅ COMPLETED
 
 ### Objective
-Implement high-throughput click analytics pipeline demonstrating async processing benefits.
+Demonstrate async processing with a message queue: the redirect handler publishes click events fire-and-forget, RabbitMQ absorbs the burst, and a separate Go worker batch-inserts events into PostgreSQL. Story told through architecture and metrics — no sync/async toggle needed.
+
+### Scope (adjusted from original plan)
+- Fire-and-forget publish — RabbitMQ unavailability is logged only, never surfaces to client
+- Analytics worker: separate Go service, own Docker container and `go.mod`
+- Batch strategy: flush when 100 events accumulated OR 5s timeout (whichever first)
+- No sync/async toggle — complexity without portfolio value
+- Traffic simulation via k6 with Zipf distribution (no real users needed)
 
 ### Tasks
-1. **RabbitMQ Setup**
-   - Topic exchange: `analytics`
-   - Queues: `analytics.clicks`, `analytics.clicks.dlq`
-   - Dead letter queue configuration
-   - Message persistence enabled
+1. **Migration** — `analytics` table + indexes on `short_code` and `clicked_at`
 
-2. **Click Event Publishing**
-   - Fire-and-forget from redirect handler
-   - Event schema:
-     ```json
-     {
-       "short_code": "abc123",
-       "clicked_at": "2026-01-22T10:30:00Z",
-       "ip": "1.2.3.4",
-       "user_agent": "...",
-       "referer": "https://twitter.com"
-     }
-     ```
-   - Publisher confirms for reliability
-   - Circuit breaker on publish failures (fallback: log locally)
+2. **Gateway publisher** (`services/gateway/internal/analytics/`)
+   - `Publisher` wraps `amqp091-go` connection + channel
+   - `NewPublisher(amqpURL)` returns `nil, nil` if `AMQP_URL` empty (feature disabled)
+   - `Publish(ctx, ClickEvent)` called in goroutine after redirect — never blocks response
+   - Event schema: `short_code`, `clicked_at`, `ip`, `referer` (user_agent dropped)
 
-3. **Analytics Worker**
-   - Consume from `analytics.clicks` queue
-   - Batch processing: 1000 events → 1 DB INSERT
-   - Configurable batch size and flush interval
-   - Retry logic with exponential backoff
-   - DLQ processing for permanent failures
+3. **RabbitMQ topology** (declared by worker on startup, idempotent)
+   - Exchange: `analytics` (topic, durable)
+   - Queue: `analytics.clicks` (durable, dead-letter → DLQ)
+   - DLQ: `analytics.clicks.dlq` (durable)
 
-4. **Performance Comparison** 🎯
-   - Synchronous mode: Direct DB insert on redirect
-   - Asynchronous mode: RabbitMQ + worker
-   - Benchmarking with k6:
-     - Measure redirect latency (target: <10ms async vs >100ms sync)
-     - Measure throughput (target: 5x improvement)
+4. **Analytics worker** (`services/analytics-worker/`)
+   - Consumes `analytics.clicks` with manual ack, prefetch = 2× batch size
+   - Flush: bulk `INSERT INTO analytics ...` → `Ack(multiple=true)`
+   - On malformed JSON: individual `Nack(requeue=false)` → routed to DLQ (permanent failure)
+   - On DB error: return error without ack/nack → `log.Fatalf` → process exits (code 1)
+     → `restart: on-failure` restarts the container → RabbitMQ requeues all unacked
+     messages automatically when the connection closes — no data loss, no tight retry loop
+   - Graceful shutdown: flushes remaining batch before exit
 
-5. **Monitoring**
-   - Queue depth metrics
-   - Processing rate (events/sec)
-   - Batch efficiency (events per INSERT)
-   - DLQ depth (alerts on growth)
+5. **k6 simulation** (`tests/analytics-load.js`)
+   - Setup: creates 10 short URLs
+   - Load: 50 VUs × 65s with Zipf weights (top URL ~40%, second ~20%)
+   - Each VU uses a distinct `X-Forwarded-For` IP to stay within the per-IP rate limit
+   - Sleep 700ms per iteration (1.4 req/s ≤ 100 req/min per-IP limit)
+   - Generated ~4100 events in a real run with Zipf distribution confirmed in DB
 
-### Deliverables
-- RabbitMQ analytics pipeline working
-- k6 load test scripts comparing sync vs async
-- Grafana dashboard showing performance improvement
-- DLQ handling with retry logic
-- Demo script: `make demo-analytics`
-
-### Demo Flow (30 seconds)
-```bash
-# 1. Baseline (sync): 100 VUs, show latency
-k6 run --vus 100 tests/clicks-sync.js
-
-# 2. Switch to async mode
-curl -X POST localhost:8080/admin/analytics/async
-
-# 3. High load (async): 1000 VUs, show improvement
-k6 run --vus 1000 tests/clicks-async.js
-
-# Result: 5x throughput, 15x latency reduction
+### Architecture
+```
+Client → Gateway (Go/Gin)
+              │  redirect → 301 → go Publish(ClickEvent)  [fire-and-forget]
+              │
+              └─── amqp091-go ──→ RabbitMQ
+                                     exchange: analytics (topic)
+                                     queue: analytics.clicks (durable)
+                                     DLQ:  analytics.clicks.dlq (malformed JSON)
+                                           │
+                                           ▼
+                                 analytics-worker (Go)
+                                   batch (100 OR 5s) → bulk INSERT
+                                   DB error → crash → docker restart → requeue
+                                           │
+                                           ▼
+                                      PostgreSQL → analytics table
 ```
 
-### Optional: Link Expiration (Nice to Have)
-- Delayed message queue for TTL-based cleanup
-- `lifecycle.expirations` queue
-- Worker processes expired URLs
-- Demo with 30s TTL for fast demonstration
+### Deliverables
+- `migrations/schema/000002_analytics.up.sql` — analytics table + indexes
+- `services/gateway/internal/analytics/` — Publisher (amqp091-go, fire-and-forget)
+- `services/analytics-worker/` — Go consumer service with batch flush + DLQ routing
+- `tests/analytics-load.js` — k6 Zipf simulation with per-VU IP spoofing
+- RabbitMQ + analytics-worker added to `docker-compose.yml` and `docker-compose.prod.yml`
+- `go.yml` CI: analytics-worker build + vet + test + lint job (separate Go module)
+- `production.yml` CI: analytics smoke test — redirect → sleep 10s → verify DB row
+- `production.yml` CI: fire-and-forget resilience test — stop worker → assert 301 still returned
+
+### Verification
+```bash
+# Start stack
+docker compose up --build -d
+
+# Fire 5 redirects, wait for flush, check rows
+CODE=$(curl -sf -X POST -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com"}' http://localhost:8080/api/v1/shorten | jq -r .short_code)
+for i in $(seq 1 5); do curl -s -o /dev/null "http://localhost:8080/$CODE"; done
+sleep 6
+docker compose exec postgres psql -U zhejian -d urlshortener \
+  -c "SELECT count(*) FROM analytics;"
+# Expected: 5
+
+# k6 simulation
+k6 run tests/analytics-load.js
+# Expected: ~4000 rows with Zipf distribution
+
+# Resilience: stop worker → redirects still 301 (fire-and-forget, gateway unaffected)
+docker compose stop analytics-worker
+curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/$CODE"
+# Expected: 301
+
+# Resilience: restart worker → drains queue, resumes processing
+docker compose start analytics-worker
+sleep 6
+docker compose exec postgres psql -U zhejian -d urlshortener \
+  -c "SELECT count(*) FROM analytics;"
+# Expected: same count as before stop (no double-counting, no data loss)
+```
 
 ---
 
@@ -713,7 +741,7 @@ Week 3-4:  ✅ Phase 3  - Build & Deployment (CD)
 Week 4-5:  ✅ Phase 4  - Caching Layer
 Week 5-6:  ✅ Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
 Week 6-7:  ✅ Phase 6  - Rust Rate Limiter + gRPC
-Week 7-8:  Phase 7  - RabbitMQ Click Analytics
+Week 7-8:  ✅ Phase 7  - RabbitMQ Click Analytics
 Week 8-9:  Phase 8  - Resilience Patterns + Toxiproxy
 Week 9:    Phase 9  - Load Testing
 Week 10-11: Phase 10 - Chaos Engineering (Extended)
