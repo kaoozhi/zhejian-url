@@ -67,6 +67,7 @@ services:
       RATE_LIMITER_ADDR: rate-limiter:50051
       RATE_LIMITER_TIMEOUT: ${RATE_LIMITER_TIMEOUT:-100ms}
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
     ports:
       - "8080:8080"
     depends_on:
@@ -80,11 +81,41 @@ services:
         condition: service_started
       jaeger:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+
+  # RabbitMQ - Message broker
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Analytics Worker
+  analytics-worker:
+    build:
+      context: ./services/analytics-worker
+    env_file: .env
+    environment:
+      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: on-failure
 
   jaeger:
     image: jaegertracing/all-in-one:1.50
@@ -113,3 +144,4 @@ volumes:
   postgres_data:
   redis_data:
   prometheus_data:
+  rabbitmq_data:
