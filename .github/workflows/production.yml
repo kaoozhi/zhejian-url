@@ -111,6 +111,38 @@ jobs:
           fi
           echo "✓ Redirect returns 301"
 
+      - name: Smoke test - analytics pipeline
+        run: |
+          CODE="${{ steps.shorten.outputs.short_code }}"
+          # The redirect above published 1 click event to RabbitMQ.
+          # The analytics-worker flushes every 5s (FLUSH_INTERVAL default).
+          # Sleep 10s to ensure the ticker fires and the batch is inserted.
+          echo "Waiting 10s for analytics-worker to flush..."
+          sleep 10
+          COUNT=$(docker compose -f docker-compose.prod.yml exec -T postgres \
+            psql -U zhejian -d urlshortener -t -c \
+            "SELECT COUNT(*) FROM analytics WHERE short_code='$CODE';")
+          COUNT=$(echo "$COUNT" | tr -d '[:space:]')
+          echo "Analytics rows for short_code=$CODE: $COUNT"
+          if [ -z "$COUNT" ] || [ "$COUNT" -lt 1 ]; then
+            echo "✗ No analytics row found — pipeline may be broken"
+            docker compose -f docker-compose.prod.yml logs analytics-worker
+            exit 1
+          fi
+          echo "✓ Analytics pipeline verified: $COUNT row(s) inserted"
+
+      - name: Smoke test - analytics worker resilience (fire-and-forget)
+        run: |
+          CODE="${{ steps.shorten.outputs.short_code }}"
+          docker compose -f docker-compose.prod.yml stop analytics-worker
+          HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" "http://localhost:8080/$CODE")
+          if [ "$HTTP_CODE" != "301" ]; then
+            echo "✗ Gateway coupled to analytics-worker: got $HTTP_CODE, expected 301"
+            exit 1
+          fi
+          echo "✓ Gateway returns 301 even with analytics-worker down"
+          docker compose -f docker-compose.prod.yml start analytics-worker
+
       - name: Smoke test - rate limit enforced (429)
         run: |
           # Fire rapid requests to exhaust the burst capacity (BURST=50).
