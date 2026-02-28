@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zhejian/url-shortener/gateway/internal/analytics"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
@@ -75,7 +76,18 @@ func main() {
 		obs.Logger.Info("Rate limiter enabled")
 	}
 
-	srv := server.NewServer(cfg, db, cache, rateLimiter, obs)
+	// Setup analytics publisher (optional — disabled when AMQP_URL is empty)
+	var pub *analytics.Publisher
+	if cfg.Analytics.Enabled {
+		pub, err = analytics.NewPublisher(cfg.Analytics.AMQPURL, obs.Logger)
+		if err != nil {
+			log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+		}
+		defer pub.Close()
+		obs.Logger.Info("Analytics publisher enabled")
+	}
+
+	srv := server.NewServer(cfg, db, cache, rateLimiter, obs, pub)
 
 	// Start server in a goroutine
 	go func() {

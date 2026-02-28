@@ -10,7 +10,41 @@ on:
 
 jobs:
 
-  build:
+  analytics-worker:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.25.5']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: services/analytics-worker/go.sum
+
+      - name: Build
+        working-directory: services/analytics-worker
+        run: go build -v ./...
+
+      - name: Check
+        working-directory: services/analytics-worker
+        run: |
+          go vet ./...
+          gofmt -s -w .
+          git diff --exit-code
+
+      - name: Test
+        working-directory: services/analytics-worker
+        run: go test -v ./...
+
+      - name: Linter
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: services/analytics-worker
+
+  gateway:
     runs-on: ubuntu-latest
     strategy:
       matrix:

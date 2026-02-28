@@ -69,23 +69,35 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # RabbitMQ - Message broker (uncomment when ready)
-  # rabbitmq:
-  #   image: rabbitmq:3.12-management-alpine
-  #   container_name: zhejian-rabbitmq
-  #   environment:
-  #     RABBITMQ_DEFAULT_USER: zhejian
-  #     RABBITMQ_DEFAULT_PASS: zhejian_secret
-  #   ports:
-  #     - "5672:5672"   # AMQP
-  #     - "15672:15672" # Management UI
-  #   volumes:
-  #     - rabbitmq_data:/var/lib/rabbitmq
-  #   healthcheck:
-  #     test: ["CMD", "rabbitmq-diagnostics", "check_running"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 5
+  # RabbitMQ - Message broker
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: zhejian-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Analytics Worker - consumes click events from RabbitMQ and bulk-inserts into PostgreSQL
+  analytics-worker:
+    build:
+      context: ./services/analytics-worker
+    container_name: zhejian-analytics-worker
+    env_file: .env
+    environment:
+      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: on-failure
 
   # Grafana - Dashboards (uncomment when ready)
   # grafana:
@@ -141,6 +153,7 @@ services:
       - RATE_LIMITER_ADDR=rate-limiter:50051
       - RATE_LIMITER_TIMEOUT=100ms
       - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
     ports:
       - "8080:8080"
     healthcheck:
@@ -155,10 +168,12 @@ services:
         condition: service_healthy
       rate-limiter:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   postgres_data:
   redis_data:
   prometheus_data:
-  # rabbitmq_data:
+  rabbitmq_data:
   # grafana_data:
