@@ -13,15 +13,22 @@ import (
 	"github.com/zhejian/url-shortener/gateway/internal/service"
 )
 
+// CBStateProvider exposes circuit breaker state for health reporting.
+type CBStateProvider interface {
+	CBState() string // "closed", "half-open", or "open"
+}
+
 // Handler holds HTTP handlers and dependencies.
 // It follows the dependency injection pattern, receiving
 // interfaces rather than concrete implementations for testability.
 type Handler struct {
-	urlService service.URLServiceInterface // URL shortening business logic
-	db         DBInterface                 // Database connection for health checks
-	cache      CacheInterface              // Cache conneciton for health checks
-	logger     *slog.Logger                // Structured logger for validation/error logging
-	publisher  *analytics.Publisher        // Analytics click event publisher (nil when disabled)
+	urlService     service.URLServiceInterface // URL shortening business logic
+	db             DBInterface                 // Database connection for health checks
+	cache          CacheInterface              // Cache conneciton for health checks
+	logger         *slog.Logger                // Structured logger for validation/error logging
+	publisher      *analytics.Publisher        // Analytics click event publisher (nil when disabled)
+	cacheCBState   CBStateProvider
+	rateLimCBState CBStateProvider
 }
 
 // DBInterface defines the database operations needed by the handler.
@@ -98,6 +105,21 @@ func (h *Handler) healthCheck(c *gin.Context) {
 		status = "degraded"
 		code = http.StatusServiceUnavailable
 		deps["database"] = "down"
+	}
+
+	if h.cacheCBState != nil {
+		cbState := h.cacheCBState.CBState()
+		deps["cache_cb"] = cbState
+		if cbState == "open" && cacheErr == nil {
+			deps["cache"] = "degraded"
+			if status == "ok" {
+				status = "degraded"
+			}
+		}
+	}
+
+	if h.rateLimCBState != nil {
+		deps["rate_limiter_cb"] = h.rateLimCBState.CBState()
 	}
 
 	c.JSON(code, gin.H{"status": status, "dependencies": deps})
@@ -270,4 +292,15 @@ func (h *Handler) errorResponse(c *gin.Context, status int, message string) {
 		Error:   http.StatusText(status), // e.g., "Bad Request", "Not Found"
 		Message: message,                 // Custom error message
 	})
+}
+
+// WithCBProviders wires circuit breaker state providers for health reporting.
+func (h *Handler) WithCBProviders(cache, rateLimiter CBStateProvider) *Handler {
+	if cache != nil {
+		h.cacheCBState = cache
+	}
+	if rateLimiter != nil {
+		h.rateLimCBState = rateLimiter
+	}
+	return h
 }

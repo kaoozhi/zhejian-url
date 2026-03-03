@@ -423,5 +423,9 @@ func (r *CachedURLRepository) cacheDel(ctx context.Context, key string) {
 	}
 }
 
+func (r *CachedURLRepository) CBState() string {
+	return r.cacheCB.State().String()
+}
+
 // Compile-time check: CachedURLRepository must implement URLRepositoryInterface.
 var _ URLRepositoryInterface = (*CachedURLRepository)(nil)
