@@ -47,7 +47,7 @@ func main() {
 
 	// Connect to cache
 	cacheConnString := cfg.Cache.ConnectionString()
-	cache, err := infra.NewCacheClient(ctx, cacheConnString)
+	cache, err := infra.NewCacheClient(ctx, cacheConnString, cfg.Cache.ReadTimeout, cfg.Cache.WriteTimeout)
 	if err != nil {
 		log.Fatalf("Failed to connect to cache: %v", err)
 	}

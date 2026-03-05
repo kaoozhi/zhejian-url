@@ -47,7 +47,11 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLi
 	baseRepo := repository.NewURLRepository(db)
 	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL, obs.Logger)
 	urlService := service.NewURLService(urlRepo, obs.Logger, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
-	handler := api.NewHandler(urlService, db, &redisPinger{client: cache}, obs.Logger, pub).WithCBProviders(urlRepo, rateLimiter)
+	var rlCB api.CBStateProvider
+	if rateLimiter != nil {
+		rlCB = rateLimiter
+	}
+	handler := api.NewHandler(urlService, db, &redisPinger{client: cache}, obs.Logger, pub).WithCBProviders(urlRepo, rlCB)
 	handler.RegisterRoutes(r)
 
 	return r

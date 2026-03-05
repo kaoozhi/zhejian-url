@@ -393,143 +393,125 @@ docker compose exec postgres psql -U zhejian -d urlshortener \
 
 ---
 
-## Phase 8: Resilience Patterns & Chaos Testing
+## Phase 8: Resilience Patterns & Chaos Testing ✅ COMPLETED
 
 ### Objective
-Add circuit breakers, retries, comprehensive failure handling, and Toxiproxy chaos testing infrastructure.
+Close the remaining resilience gaps (Redis operation timeout, RabbitMQ publisher reconnect), extend Toxiproxy coverage from rate-limiter-only to all dependencies, improve health check observability, and build a comprehensive automated chaos test suite with 5 scenarios that prove each pattern holds under failure.
+
+### What already existed (from earlier phases)
+- Circuit breaker on Redis (`sony/gobreaker`) — 5 consecutive failures → open → DB fallback
+- Circuit breaker on Rate Limiter (`sony/gobreaker`) — 5 consecutive failures → open → fail-open
+- Fail-open for rate limiter — unavailable → allow all requests
+- Cache-aside with DB fallback, singleflight, negative caching
+- HTTP timeouts (10s), gRPC timeout (100ms), graceful shutdown
+- Toxiproxy + `chaos-test.sh` — **rate-limiter only** (2 scenarios: latency + recovery)
+
+### What was dropped from original plan and why
+- **Circuit breaker on Postgres** — DB is the critical path; if it's down you 503 either way; fail-fast is already provided by pgx pool timeout
+- **Circuit breaker on RabbitMQ publish** — publisher already swallows errors silently (fire-and-forget); a CB adds no observable difference
+- **Exponential backoff / retry logic** — DB queries should fail fast; analytics retries via docker restart; short code collision retry already exists
+- **Backpressure / request queue limits** — the Rust rate limiter already handles request rate at the token bucket level
+- **Bloom filter** — negative caching (1-minute sentinel) already prevents repeated DB queries for non-existent URLs
+- **Cache warming** — premature optimisation; relevant only at scale
 
 ### Tasks
-1. **Toxiproxy Integration** 🎯
-   - `docker-compose.chaos.yml` with Toxiproxy service
-   - Proxy configuration for all external dependencies (Postgres, Redis, RabbitMQ, Rate Limiter)
-   - Toxiproxy CLI setup for failure injection
-   - Route all service calls through Toxiproxy proxies
 
-2. **Circuit Breakers** 🎯
-   - Wrap all external service calls:
-     - PostgreSQL queries
-     - Redis operations
-     - Rate limiter gRPC calls
-     - RabbitMQ publish
-   - Configurable thresholds (errors, timeout, half-open)
-   - Metrics for circuit breaker state
+**Task 1: Extend Toxiproxy to Redis and Postgres** ✅
 
-3. **Retry Logic**
-   - Exponential backoff with jitter
-   - Configurable retry counts per service
-   - Idempotency considerations (use request IDs)
+Added Redis and Postgres proxies to `docker-compose.chaos.yml` and routed gateway through them via env vars — no gateway code changes required.
 
-4. **Backpressure Handling**
-   - Request queue limits (reject with 429 if full)
-   - Load shedding strategies (drop low-priority requests)
-   - Graceful degradation levels
+```yaml
+# docker-compose.chaos.yml
+toxiproxy-init:
+  # registers:
+  #   redis    → redis:6379    (listen :6380)
+  #   postgres → postgres:5432 (listen :5433)
 
-5. **Advanced Cache Strategies**
-   - Bloom filter for existence checks (prevents DB queries for non-existent URLs)
-   - Cache warming on startup (top 1000 URLs by click_count)
+gateway:
+  environment:
+    CACHE_HOST: toxiproxy
+    CACHE_PORT: "6380"
+    # Tighten Redis timeouts so Scenario 2 latency injection (200ms)
+    # reliably exceeds the client deadline and triggers the circuit breaker.
+    CACHE_READ_TIMEOUT: "100ms"
+    CACHE_WRITE_TIMEOUT: "100ms"
+    DB_HOST: toxiproxy
+    DB_PORT: "5433"
+```
 
-6. **Concrete Chaos Scenarios** 🎯
+**Task 2: Redis operation timeout** ✅
 
-   **Scenario 1: PostgreSQL Failure**
-   ```bash
-   # Inject: 100% connection timeout
-   toxiproxy-cli toxic add postgres -t timeout -a timeout=0
-   
-   # Expected:
-   # - Circuit breaker opens after 5 failures
-   # - Health check returns unhealthy
-   # - Service returns 503 Service Unavailable
-   # - Auto-recovery when DB restored
-   
-   # Verify:
-   curl localhost:8080/health/ready  # Returns 503
-   toxiproxy-cli toxic remove postgres timeout
-   sleep 10
-   curl localhost:8080/health/ready  # Returns 200
-   ```
+- Per-operation `context.WithTimeout(ctx, 50ms)` wrapping `cacheGet` / `cacheSet` / `cacheDel`
+- Slow Redis → deadline exceeded → CB failure → 5 ops → CB opens → DB fallback
+- `CACHE_OPERATION_TIMEOUT` env var (default 50ms); configurable via `CBSettings.OperationTimeout`
+- Redis TCP timeouts added as belt-and-suspenders: `CACHE_READ_TIMEOUT` / `CACHE_WRITE_TIMEOUT` (configurable via `CacheConfig`, default 500ms, chaos overlay uses 100ms)
 
-   **Scenario 2: Redis Partial Failure**
-   ```bash
-   # Inject: 50% packet loss
-   toxiproxy-cli toxic add redis -t limit_data -a bytes=100
-   
-   # Expected:
-   # - Retries succeed eventually (with backoff)
-   # - Latency increases but requests succeed
-   # - Cache hit ratio drops, more DB queries
-   
-   # Verify metrics:
-   curl localhost:9090/metrics | grep cache_misses_total
-   ```
+**Task 3: RabbitMQ publisher reconnect** ✅
 
-   **Scenario 3: Rate Limiter Slow**
-   ```bash
-   # Inject: +500ms latency
-   toxiproxy-cli toxic add rate_limiter -t latency -a latency=500
-   
-   # Expected:
-   # - Gateway timeout after 100ms
-   # - Circuit breaker opens
-   # - Fallback to local rate limiting
-   # - URLs still created (degraded mode)
-   
-   # Verify:
-   curl -w "@curl-format.txt" localhost:8080/api/v1/shorten
-   # Response time: <150ms (didn't wait for 500ms)
-   ```
+- Background goroutine monitors `conn.NotifyClose()` channel
+- On close: re-dials with backoff (3 attempts: 1s / 2s / 4s), atomically swaps `conn` + `channel`
+- If all retries fail: publisher degrades to no-ops until next reconnect attempt
+- Publisher AMQP heartbeat set to 2s (`amqp.DialConfig`) — worst-case disconnect detection ≤4s even on WSL2 where TCP RST may not propagate immediately to idle connections
+- Errors logged only — redirect path is never affected
 
-   **Scenario 4: RabbitMQ Complete Failure**
-   ```bash
-   # Inject: Stop RabbitMQ entirely
-   docker-compose stop rabbitmq
-   
-   # Expected:
-   # - Redirects still work (fire-and-forget)
-   # - Analytics events lost (acceptable)
-   # - Circuit breaker prevents retry spam
-   # - Logs indicate analytics unavailable
-   
-   # Verify:
-   k6 run tests/redirects.js  # Still succeeds
-   curl localhost:9090/metrics | grep analytics_publish_errors
-   ```
+**Task 4: Health check — expose circuit breaker state** ✅
 
-   **Scenario 5: Cascading Failure**
-   ```bash
-   # Inject: Kill Postgres → Redis overload → Rate limiter can't update
-   docker-compose stop postgres
-   
-   # Expected:
-   # - Gateway circuit breaker opens
-   # - Redis queries increase (more cache misses)
-   # - Rate limiter can't persist limits (uses local state)
-   # - Graceful degradation at each layer
-   # - System recovers when Postgres restored
-   ```
+- Added `cache_cb` and `rate_limiter_cb` fields: `"closed"` / `"half-open"` / `"open"`
+- `"degraded"` status when CB is open (fallback active, not down) vs `"down"` when ping fails
+- HTTP 503 only when Postgres or Redis is confirmed unreachable (preserves existing behaviour)
+
+```json
+{
+  "status": "degraded",
+  "dependencies": {
+    "database":        "up",
+    "cache":           "degraded",
+    "cache_cb":        "open",
+    "rate_limiter_cb": "closed"
+  }
+}
+```
+
+**Task 5: Expand chaos-test.sh — 5 complete scenarios** ✅
+
+| # | Failure injected | Pattern under test | Pass condition |
+|---|---|---|---|
+| 1 | Rate-limiter +500ms latency | CB + fail-open | All 10 requests 200, CB state logged, 429 restored after recovery |
+| 2 | Redis +200ms latency via Toxiproxy | Redis CB + DB fallback | All 10 requests 301, `cache_cb=open` in health, CB closes after recovery |
+| 3 | Redis down (toxic timeout=0) | Redis CB open → DB fallback | All 10 requests 301, CB recovers |
+| 4 | Postgres down (`docker compose stop`) | Health 503, graceful degradation | `/health` = 503, redirects stable, Postgres restart → 200 |
+| 5a | RabbitMQ `docker compose stop` | Fire-and-forget analytics | All 10 redirects 301 |
+| 5b | RabbitMQ disconnect | Publisher reconnect | Gateway + worker both log disconnect within ≤4s |
+
+Each scenario: inject → verify → remove → verify recovery.
+
+### Key design decisions
+- **`CACHE_READ_TIMEOUT=100ms` in chaos overlay**: 200ms Toxiproxy latency reliably exceeds the 100ms TCP deadline → CB trip. Production default is 500ms.
+- **`context.WithTimeout` vs TCP ReadTimeout**: context deadline fires first when propagated; TCP timeout is the backstop for library-level bypass. Both serve distinct failure modes.
+- **AMQP heartbeat=2s**: negotiated with RabbitMQ server (min of client/server); worst-case detection = 2 missed beats = 4s. Removes dependency on WSL2 TCP RST propagation.
+- **CB health check during Redis chaos**: `redisPinger.Ping()` also times out (100ms < 200ms), so health returns 503. `curl -s` (not `-sf`) is used to get the JSON body regardless of HTTP status.
+- **CB HalfOpen → Closed recovery**: requires `MaxRequests=3` successful `cacheCB.Execute()` calls. Three probe redirects are fired after the 32s CB timeout.
 
 ### Deliverables
-- `docker-compose.chaos.yml` with Toxiproxy setup
-- Circuit breakers on all external dependencies
-- Retry logic with configurable backoff
-- 5 documented chaos scenarios with verification steps
-- Health check aggregating all dependencies
-- Grafana dashboard showing circuit breaker states
-- Chaos testing scripts (`scripts/chaos-test.sh`)
+- ✅ `docker-compose.chaos.yml` — Toxiproxy extended to Redis + Postgres proxies
+- ✅ `services/gateway/internal/config/config.go` — `CACHE_READ_TIMEOUT` / `CACHE_WRITE_TIMEOUT` env vars
+- ✅ `services/gateway/internal/infra/infra.go` — configurable Redis `ReadTimeout` / `WriteTimeout`
+- ✅ `services/gateway/internal/repository/cached_url_repository.go` — Redis operation timeout (50ms), configurable via `CBSettings.OperationTimeout`
+- ✅ `services/gateway/internal/analytics/publisher.go` — AMQP reconnect with backoff + 2s heartbeat
+- ✅ `services/gateway/internal/api/handler.go` — CB state in health check response
+- ✅ `services/gateway/internal/server/server.go` — nil-safe `CBStateProvider` wiring
+- ✅ `scripts/chaos-test.sh` — 5 scenarios with explicit pass/fail assertions and recovery verification
 
-### Chaos Testing Automation
+### Verification
 ```bash
-# scripts/chaos-test.sh
-#!/bin/bash
-echo "Running chaos scenario: $1"
-case $1 in
-  postgres-failure)
-    ./scenarios/postgres-failure.sh
-    ;;
-  redis-degradation)
-    ./scenarios/redis-degradation.sh
-    ;;
-  # ... etc
-esac
+# Run all 5 chaos scenarios
+./scripts/chaos-test.sh
+
+# Run a specific scenario
+./scripts/chaos-test.sh --scenario 2
+
+# Expected output: all assertions pass
+# === Results: N passed, 0 failed ===
 ```
 
 ---
@@ -742,7 +724,7 @@ Week 4-5:  ✅ Phase 4  - Caching Layer
 Week 5-6:  ✅ Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
 Week 6-7:  ✅ Phase 6  - Rust Rate Limiter + gRPC
 Week 7-8:  ✅ Phase 7  - RabbitMQ Click Analytics
-Week 8-9:  Phase 8  - Resilience Patterns + Toxiproxy
+Week 8-9:  ✅ Phase 8  - Resilience Patterns + Toxiproxy
 Week 9:    Phase 9  - Load Testing
 Week 10-11: Phase 10 - Chaos Engineering (Extended)
 Week 12:   Phase 11 - Dashboards & Alerting

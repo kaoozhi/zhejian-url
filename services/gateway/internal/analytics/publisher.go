@@ -53,9 +53,18 @@ func NewDegradedPublisher(logger *slog.Logger) *Publisher {
 	return &Publisher{logger: logger}
 }
 
+// publisherHeartbeat is the AMQP heartbeat interval requested by the publisher.
+// The negotiated value is min(client, server); RabbitMQ defaults to 60 s so
+// this 2 s value wins.  With two missed beats the library considers the
+// connection dead, giving ≤4 s detection even when a TCP RST from a stopped
+// broker is not propagated immediately (e.g. on WSL2).
+const publisherHeartbeat = 2 * time.Second
+
 // dial creates a new AMQP connection, opens a channel, and declares the exchange.
 func dial(amqpURL string) (*amqp.Connection, *amqp.Channel, error) {
-	conn, err := amqp.Dial(amqpURL)
+	conn, err := amqp.DialConfig(amqpURL, amqp.Config{
+		Heartbeat: publisherHeartbeat,
+	})
 	if err != nil {
 		return nil, nil, err
 	}

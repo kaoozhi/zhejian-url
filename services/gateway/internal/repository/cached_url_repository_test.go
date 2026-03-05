@@ -565,6 +565,7 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 			Interval:            time.Second,
 			Timeout:             100 * time.Millisecond,
 			ConsecutiveFailures: 2,
+			OperationTimeout:    50 * time.Millisecond,
 		}}
 		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, newTestLogger(), recoverOpts)
 

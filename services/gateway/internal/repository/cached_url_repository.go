@@ -64,7 +64,7 @@ func DefaultCBSettings() CBSettings {
 		Interval:            10 * time.Second,
 		Timeout:             30 * time.Second,
 		ConsecutiveFailures: 5,
-		OperationTimeout:    5 * time.Millisecond,
+		OperationTimeout:    50 * time.Millisecond,
 	}
 }
 

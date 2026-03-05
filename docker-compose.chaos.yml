@@ -59,6 +59,10 @@ services:
       - RATE_LIMITER_ADDR=toxiproxy:50052
       - CACHE_HOST=toxiproxy
       - CACHE_PORT=6380
+      # Tighten Redis timeouts so latency injection in Scenario 2 (200 ms)
+      # reliably exceeds the client deadline and triggers the circuit breaker.
+      - CACHE_READ_TIMEOUT=100ms
+      - CACHE_WRITE_TIMEOUT=100ms
       - DB_HOST=toxiproxy
       - DB_PORT=5433
     depends_on:

@@ -3,12 +3,18 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/zhejian/url-shortener/analytics-worker/internal/repository"
 )
+
+// ErrFatal wraps errors that cannot be resolved by reconnecting to RabbitMQ
+// (e.g. a database failure). The caller should not retry after receiving this.
+var ErrFatal = errors.New("fatal consumer error")
 
 const (
 	queueName    = "analytics.clicks"
@@ -190,7 +196,9 @@ func (c *Consumer) flush(ctx context.Context, deliveries []amqp.Delivery) error 
 			slog.String("error", err.Error()),
 			slog.Int("batch_size", len(events)))
 		// Do NOT ack or nack — closing the connection requeues unacked messages.
-		return err
+		// Wrap with ErrFatal so the caller knows not to retry (DB errors require a
+		// process restart, not an AMQP reconnect).
+		return fmt.Errorf("%w: %w", ErrFatal, err)
 	}
 
 	// One Ack with multiple=true covers every unacked delivery up to and

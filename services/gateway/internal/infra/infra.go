@@ -34,10 +34,19 @@ func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, err
 }
 
 // NewCacheClient creates a Redis client from a connection string.
-func NewCacheClient(ctx context.Context, connString string) (*redis.Client, error) {
+// readTimeout and writeTimeout override the go-redis defaults (3 s each);
+// pass 0 to keep the defaults.
+func NewCacheClient(ctx context.Context, connString string, readTimeout, writeTimeout time.Duration) (*redis.Client, error) {
 	opt, err := redis.ParseURL(connString)
 	if err != nil {
 		return nil, err
+	}
+
+	if readTimeout > 0 {
+		opt.ReadTimeout = readTimeout
+	}
+	if writeTimeout > 0 {
+		opt.WriteTimeout = writeTimeout
 	}
 
 	rdb := redis.NewClient(opt)
