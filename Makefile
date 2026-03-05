@@ -103,13 +103,33 @@ db-connect:
 # Testing
 # =============================================================================
 
-## Run load tests
-load-test:
-	cd testing/load && k6 run load-test.js
+## Run baseline load test with k6 web dashboard (100 VUs, 9 min)
+load-baseline:
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/baseline-report.html \
+	k6 run tests/baseline.js
+
+## Run spike load test (50 → 300 → 50 VUs, ~5 min)
+load-spike:
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/spike-report.html \
+	k6 run tests/spike.js
+
+## Run endurance load test (100 VUs, 12 min — local only)
+load-endurance:
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/endurance-report.html \
+	k6 run tests/endurance.js
+
+## Run throughput ceiling test — RATE_LIMITER_ADDR="" make load-throughput
+load-throughput:
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-report.html \
+	k6 run tests/throughput.js
+
+## Run analytics load simulation (Zipf distribution, 50 VUs)
+load-analytics:
+	k6 run tests/analytics-load.js
 
 ## Run chaos tests
 chaos-test:
-	cd testing/chaos && ./run-chaos.sh
+	./scripts/chaos-test.sh
 
 ## Run integration tests
 integration-test:
@@ -177,6 +197,12 @@ help:
 	@echo "  make db-reset        Reset database"
 	@echo "  make db-connect      Connect to psql"
 	@echo ""
-	@echo "Testing:"
-	@echo "  make load-test       Run load tests"
-	@echo "  make chaos-test      Run chaos tests"
+	@echo "Load Testing:"
+	@echo "  make load-baseline   Baseline (100 VUs, 9 min, dashboard)"
+	@echo "  make load-spike      Spike (50→300→50 VUs)"
+	@echo "  make load-endurance  Endurance (100 VUs, 12 min, local only)"
+	@echo "  make load-throughput Throughput ceiling (rate limiter disabled)"
+	@echo "  make load-analytics  Analytics simulation (Zipf, 50 VUs)"
+	@echo ""
+	@echo "Chaos Testing:"
+	@echo "  make chaos-test      Run all chaos scenarios"
