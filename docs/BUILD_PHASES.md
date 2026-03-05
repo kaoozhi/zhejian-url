@@ -516,67 +516,99 @@ Each scenario: inject → verify → remove → verify recovery.
 
 ---
 
-## Phase 9: Load Testing
+## Phase 9: Load Testing ✅ COMPLETED
 
 ### Objective
-Validate system performance under realistic load.
+Validate system performance under realistic load using k6, with real-time visualization via the k6 web dashboard and Prometheus remote write.
+
+### Scope (revised from original plan)
+
+**What changed from original plan and why:**
+- Spike target reduced from 1000 → 300 VUs: 1000 VUs on WSL2/Docker exhausts resources; 300 is realistic
+- Endurance shortened from 60min → 10min: diminishing returns after 10min for local portfolio testing
+- Added `throughput.js` (not in original plan): to measure raw system ceiling without rate limiter
+- Thresholds calibrated for WSL2/Docker (p95 < 200ms redirects) not production bare-metal
+- All tests use per-VU `X-Forwarded-For` spoofing — required because the Rust rate limiter enforces 100 req/min per IP
 
 ### Tasks
-1. **k6 Test Scenarios**
 
-   **Baseline Load Test**
-   ```javascript
-   // tests/baseline.js
-   export let options = {
-     stages: [
-       { duration: '2m', target: 100 },   // Ramp up
-       { duration: '5m', target: 100 },   // Steady state
-       { duration: '2m', target: 0 },     // Ramp down
-     ],
-     thresholds: {
-       http_req_duration: ['p(95)<100'],  // 95% under 100ms
-       http_req_failed: ['rate<0.01'],    // <1% errors
-     },
-   };
-   ```
+**Task 1: Prometheus remote write receiver** ✅
+- Added `--web.enable-remote-write-receiver` to prometheus service in `docker-compose.yml` and `docker-compose.prod.yml`
+- Enables `k6 run -o experimental-prometheus-rw` to push k6 metrics alongside gateway metrics
 
-   **Spike Test**
-   ```javascript
-   // tests/spike.js
-   export let options = {
-     stages: [
-       { duration: '1m', target: 100 },
-       { duration: '30s', target: 1000 },  // Sudden spike
-       { duration: '1m', target: 100 },
-     ],
-   };
-   ```
+**Task 2: results/ directory** ✅
+- `results/.gitkeep` — directory tracked in git
+- `.gitignore` entry for `results/*.html` — generated reports are local only
 
-   **Endurance Test**
-   ```javascript
-   // tests/endurance.js
-   export let options = {
-     stages: [
-       { duration: '5m', target: 200 },
-       { duration: '60m', target: 200 },  // Sustained load
-     ],
-   };
-   ```
+**Task 3-6: k6 test suite** ✅
 
-2. **Performance Targets**
-   - URL creation: <100ms p95, 500 req/s
-   - Redirects (cached): <10ms p95, 5000 req/s
-   - Redirects (uncached): <50ms p95, 1000 req/s
+| File | VUs | Duration | Purpose |
+|---|---|---|---|
+| `tests/baseline.js` | 100 | 9 min (2+5+2) | Steady-state SLO validation |
+| `tests/spike.js` | 50→300→50 | ~5 min | Error rate under sudden load |
+| `tests/endurance.js` | 100 | 12 min (1+10+1) | Memory leaks / pool exhaustion |
+| `tests/throughput.js` | 200 | 4 min (30s+3m+30s) | Raw ceiling (rate limiter disabled) |
 
-3. **Realistic Traffic Patterns**
-   - 80% reads (redirects), 20% writes (create)
-   - Zipf distribution for URL popularity
-   - Realistic user agents and referers
+**Task 7: Makefile** ✅
+- Replaced stale `load-test` target (pointed to nonexistent `testing/load/load-test.js`)
+- Added `load-baseline`, `load-spike`, `load-endurance`, `load-throughput`, `load-analytics` targets
+
+**Task 8: CI workflow** ✅
+- `.github/workflows/load-test.yml` — triggers on push to main and `workflow_dispatch`
+- Runs `baseline.js` in CI mode (`CI=true` → shorter 1+2+1 min stages)
+- Uploads HTML report as artifact (30-day retention)
+
+### Key design decisions
+
+- **Per-VU IP spoofing**: `X-Forwarded-For: 10.0.{VU/256}.{VU%256}` gives each VU its own rate-limit token bucket, simulating distinct users. Pattern established in `tests/analytics-load.js`.
+- **`CI=true` env var**: `baseline.js` detects this to use 1+2+1 min stages instead of 2+5+2, keeping CI jobs under 6 minutes total.
+- **p95 < 200ms threshold**: Calibrated for WSL2/Docker. Every request pays gRPC rate-limiter overhead (~1-3ms) plus Docker bridge networking. Tighten to 50ms on native Linux.
+- **`throughput.js` has no sleep**: Designed to find the ceiling; rate limiter must be disabled via `RATE_LIMITER_ADDR=""` otherwise the system sends 429s and skews the error rate.
+- **No shared k6 module**: `vuIP()` and `pickWeighted()` are inlined in each test file — simpler, no import complexity, each file is self-contained.
+
+### Visualization
+
+```
+Local run:
+  K6_WEB_DASHBOARD=true k6 run tests/baseline.js
+  → Browser dashboard at http://localhost:5665 (real-time VUs, p95, error rate)
+  → results/baseline-report.html (standalone HTML after run)
+
+With Prometheus remote write:
+  K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write \
+  k6 run -o experimental-prometheus-rw tests/baseline.js
+  → k6 metrics (k6_http_req_duration_*, k6_vus) appear in Prometheus UI at :9090
+  → Correlate client-observed latency with gateway's server-side http_request_duration_seconds
+```
 
 ### Deliverables
-- k6 test suite (baseline, spike, endurance)
-- Performance test results documented
-- CI integration (run on main branch)
+- ✅ `tests/baseline.js` — 100 VUs, 80/20 read/write, Zipf, CI-short mode
+- ✅ `tests/spike.js` — 50→300→50 VUs, error rate threshold only
+- ✅ `tests/endurance.js` — 100 VUs, 10 min, local only
+- ✅ `tests/throughput.js` — 200 VUs, no sleep, rate limiter disabled
+- ✅ `results/.gitkeep` — directory for HTML report exports
+- ✅ `docker-compose.yml` + `docker-compose.prod.yml` — Prometheus remote write enabled
+- ✅ `Makefile` — `load-baseline`, `load-spike`, `load-endurance`, `load-throughput` targets
+- ✅ `.github/workflows/load-test.yml` — CI baseline with HTML artifact
+
+### Usage
+```bash
+# Start stack
+docker compose up --build -d
+
+# Baseline with live dashboard
+make load-baseline
+# → Opens http://localhost:5665, exports results/baseline-report.html
+
+# Spike test
+make load-spike
+
+# Throughput ceiling (rate limiter disabled)
+RATE_LIMITER_ADDR="" make load-throughput
+
+# CI dry-run (4 min)
+CI=true k6 run tests/baseline.js
+```
 
 ---
 
@@ -725,7 +757,7 @@ Week 5-6:  ✅ Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
 Week 6-7:  ✅ Phase 6  - Rust Rate Limiter + gRPC
 Week 7-8:  ✅ Phase 7  - RabbitMQ Click Analytics
 Week 8-9:  ✅ Phase 8  - Resilience Patterns + Toxiproxy
-Week 9:    Phase 9  - Load Testing
+Week 9:    ✅ Phase 9  - Load Testing
 Week 10-11: Phase 10 - Chaos Engineering (Extended)
 Week 12:   Phase 11 - Dashboards & Alerting
 Week 13:   Phase 12 - Documentation & Polish
