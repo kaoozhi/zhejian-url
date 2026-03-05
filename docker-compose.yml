@@ -1,19 +1,16 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: zhejian-postgres
     environment:
-      POSTGRES_USER: zhejian
-      POSTGRES_PASSWORD: zhejian_secret
-      POSTGRES_DB: urlshortener
+      POSTGRES_USER: ${DB_USER:-zhejian}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-zhejian_secret}
+      POSTGRES_DB: ${DB_NAME:-urlshortener}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zhejian -d urlshortener"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-zhejian} -d ${DB_NAME:-urlshortener}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,16 +18,14 @@ services:
   migrations:
     build: ./migrations
     environment:
-      DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable
+      DATABASE_URL: postgres://${DB_USER:-zhejian}:${DB_PASSWORD:-zhejian_secret}@postgres:5432/${DB_NAME:-urlshortener}?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
-  # Redis - Caching layer
   redis:
     image: redis:8-alpine
-    container_name: zhejian-redis
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
@@ -42,21 +37,96 @@ services:
       timeout: 5s
       retries: 5
 
-  # Jaeger - Distributed tracing
+  rate-limiter:
+    build:
+      context: .
+      dockerfile: services/rate-limiter/Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379
+      GRPC_PORT: "50051"
+      RATE_LIMIT: ${RATE_LIMIT:-100}
+      BURST: ${BURST:-50}
+    expose:
+      - "50051"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  gateway:
+    build: ./services/gateway
+    environment:
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-zhejian}
+      DB_PASSWORD: ${DB_PASSWORD:-zhejian_secret}
+      DB_NAME: ${DB_NAME:-urlshortener}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      CACHE_HOST: ${CACHE_HOST:-redis}
+      CACHE_PORT: ${CACHE_PORT:-6379}
+      CACHE_TTL: ${CACHE_TTL:-5m}
+      RATE_LIMITER_ADDR: rate-limiter:50051
+      RATE_LIMITER_TIMEOUT: ${RATE_LIMITER_TIMEOUT:-100ms}
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rate-limiter:
+        condition: service_started
+      jaeger:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # RabbitMQ - Message broker
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Analytics Worker
+  analytics-worker:
+    build:
+      context: ./services/analytics-worker
+    env_file: .env
+    environment:
+      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
   jaeger:
     image: jaegertracing/all-in-one:1.50
-    container_name: zhejian-jaeger
     environment:
-      COLLECTOR_OTLP_ENABLED: true
+      COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686" # Jaeger UI
       - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
 
-  # Prometheus - Metrics collection
   prometheus:
     image: prom/prometheus:v2.47.0
-    container_name: zhejian-prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -68,107 +138,8 @@ services:
       - prometheus_data:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  # RabbitMQ - Message broker
-  rabbitmq:
-    image: rabbitmq:4-management-alpine
-    container_name: zhejian-rabbitmq
-    ports:
-      - "5672:5672"   # AMQP
-      - "15672:15672" # Management UI
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Analytics Worker - consumes click events from RabbitMQ and bulk-inserts into PostgreSQL
-  analytics-worker:
-    build:
-      context: ./services/analytics-worker
-    container_name: zhejian-analytics-worker
-    env_file: .env
-    environment:
-      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
     depends_on:
-      rabbitmq:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    restart: on-failure
-
-  # Grafana - Dashboards (uncomment when ready)
-  # grafana:
-  #   image: grafana/grafana:10.1.0
-  #   container_name: zhejian-grafana
-  #   environment:
-  #     GF_SECURITY_ADMIN_USER: admin
-  #     GF_SECURITY_ADMIN_PASSWORD: admin
-  #     GF_USERS_ALLOW_SIGN_UP: false
-  #   ports:
-  #     - "3001:3000"
-  #   volumes:
-  #     - ./observability/grafana/provisioning:/etc/grafana/provisioning
-  #     - grafana_data:/var/lib/grafana
-  #   depends_on:
-  #     - prometheus
-
-
-
-  # Rust Rate Limiter
-  rate-limiter:
-    build:
-      context: .                                    # repo root — build.rs needs proto/
-      dockerfile: services/rate-limiter/Dockerfile
-    container_name: zhejian-rate-limiter
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - GRPC_PORT=50051
-      - RATE_LIMIT=${RATE_LIMIT:-100}
-      - BURST=${BURST:-50}
-    expose:
-      - "50051"
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  # Go API Gateway
-  gateway:
-    build:
-      context: ./services/gateway
-      dockerfile: Dockerfile
-    container_name: zhejian-gateway
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=zhejian
-      - DB_PASSWORD=zhejian_secret
-      - DB_NAME=urlshortener
-      - DB_SSLMODE=disable
-      - CACHE_HOST=redis
-      - CACHE_PORT=6379
-      - CACHE_TTL=5
-      - RATE_LIMITER_ADDR=rate-limiter:50051
-      - RATE_LIMITER_TIMEOUT=100ms
-      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
-      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rate-limiter:
-        condition: service_started
-      rabbitmq:
+      gateway:
         condition: service_healthy
 
 volumes:
@@ -176,4 +147,3 @@ volumes:
   redis_data:
   prometheus_data:
   rabbitmq_data:
-  # grafana_data:

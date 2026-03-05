@@ -168,12 +168,13 @@ func (p *Publisher) watchAndReconnect() {
 		if p.closed.Load() {
 			return // clean shutdown via Close()
 		}
-		if amqpErr == nil {
-			return // clean close, no reconnect needed
-		}
 
+		reason := "broker closed connection"
+		if amqpErr != nil {
+			reason = amqpErr.Error()
+		}
 		p.logger.Warn("analytics: AMQP connection lost, reconnecting",
-			slog.String("reason", amqpErr.Error()))
+			slog.String("reason", reason))
 
 		p.mu.Lock()
 		p.channel = nil // mark degraded during reconnect

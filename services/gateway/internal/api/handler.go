@@ -122,6 +122,10 @@ func (h *Handler) healthCheck(c *gin.Context) {
 		deps["rate_limiter_cb"] = h.rateLimCBState.CBState()
 	}
 
+	if h.publisher != nil {
+		deps["amqp_connected"] = h.publisher.IsConnected()
+	}
+
 	c.JSON(code, gin.H{"status": status, "dependencies": deps})
 }
 

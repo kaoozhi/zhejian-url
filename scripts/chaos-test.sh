@@ -309,10 +309,16 @@ scenario_5() {
   if [ "$all_ok" = "true" ]; then pass "Scenario 5a: all 10 redirects returned 301 with RabbitMQ down"; fi
 
   # 5b: Both services detected the disconnect.
-  # Publisher heartbeat is 2 s → detection ≤4 s even without an immediate TCP
-  # RST (e.g. WSL2).  sleep 3 + the curl loop above already cover that window.
-  # --tail avoids host/daemon clock-skew that can affect --since filters.
-  if $COMPOSE logs --tail 500 gateway 2>/dev/null | grep -q "AMQP connection lost"; then
+  # Publisher heartbeat = 2 s → worst-case detection = 4 s (2 missed beats).
+  # Poll /health for amqp_connected=false — avoids Docker log buffering races.
+  FOUND_GW=false
+  for _attempt in 1 2 3 4 5; do
+    if curl -s "$GATEWAY/health" | grep -q '"amqp_connected":false'; then
+      FOUND_GW=true; break
+    fi
+    sleep 2
+  done
+  if [ "$FOUND_GW" = "true" ]; then
     pass "Scenario 5b: gateway publisher detected broker disconnect"
   else
     fail "Scenario 5b: gateway publisher did not log broker disconnect"
