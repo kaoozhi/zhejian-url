@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"log/slog"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
@@ -364,6 +366,48 @@ func (c *countingRepository) GetByCode(ctx context.Context, code string) (*model
 	return c.URLRepositoryInterface.GetByCode(ctx, code)
 }
 
+// mockURLRepository is a testify mock for URLRepositoryInterface.
+type mockURLRepository struct{ mock.Mock }
+
+func (m *mockURLRepository) GetByCode(ctx context.Context, code string) (*model.URL, error) {
+	args := m.Called(ctx, code)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.URL), args.Error(1)
+}
+
+func (m *mockURLRepository) Create(ctx context.Context, url *model.URL) error {
+	return m.Called(ctx, url).Error(0)
+}
+
+func (m *mockURLRepository) Delete(ctx context.Context, code string) error {
+	return m.Called(ctx, code).Error(0)
+}
+
+// hangingRedisClient returns a Redis client connected to a TCP server that accepts
+// connections but never sends data. Every operation hangs until the context expires.
+func hangingRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			// Accept but never write — simulates a hung Redis server.
+			go func(c net.Conn) { defer c.Close(); time.Sleep(10 * time.Second) }(conn)
+		}
+	}()
+	return redis.NewClient(&redis.Options{
+		Addr:        ln.Addr().String(),
+		DialTimeout: 20 * time.Millisecond, // fail fast in tests; production uses default 5s
+	})
+}
+
 func TestCachedURLRepository_SingleFlight(t *testing.T) {
 	ctx := context.Background()
 
@@ -521,6 +565,7 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 			Interval:            time.Second,
 			Timeout:             100 * time.Millisecond,
 			ConsecutiveFailures: 2,
+			OperationTimeout:    50 * time.Millisecond,
 		}}
 		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, newTestLogger(), recoverOpts)
 
@@ -552,4 +597,40 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 		exists, _ := testCache.Client.Exists(ctx, cacheKey).Result()
 		assert.Equal(t, int64(1), exists, "expected URL to be cached after CB recovery")
 	})
+}
+
+func TestCacheTimeout_TripsCircuitBreaker(t *testing.T) {
+	cb := CBSettings{
+		MaxRequests:         1,
+		Interval:            10 * time.Second,
+		Timeout:             1 * time.Second,
+		ConsecutiveFailures: 3,
+		OperationTimeout:    5 * time.Millisecond,
+	}
+
+	mockDB := &mockURLRepository{}
+	mockDB.On("GetByCode", mock.Anything, "abc").Return(
+		&model.URL{ShortCode: "abc", OriginalURL: "https://example.com"}, nil,
+	)
+
+	slowClient := hangingRedisClient(t)
+	defer slowClient.Close()
+
+	repo := NewCachedURLRepository(
+		mockDB, slowClient, 5*time.Minute,
+		newTestLogger(),
+		CachedURLRepositoryOptions{CacheCB: &cb},
+	)
+
+	ctx := context.Background()
+	// Drive 3 consecutive cache timeouts to open the circuit breaker.
+	for range 3 {
+		_, _ = repo.GetByCode(ctx, "abc")
+	}
+
+	// CB is now open — GetByCode must fall back to DB without touching cache.
+	url, err := repo.GetByCode(ctx, "abc")
+	assert.NoError(t, err)
+	assert.Equal(t, "abc", url.ShortCode)
+	mockDB.AssertCalled(t, "GetByCode", mock.Anything, "abc")
 }

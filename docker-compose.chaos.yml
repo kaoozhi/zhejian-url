@@ -3,21 +3,20 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.chaos.yml up
 #
-# This overlay adds Toxiproxy in front of the rate-limiter and rewires the
-# gateway to go through it. Zero changes to application code.
+# Proxies:
+#   rate-limiter  toxiproxy:50052  →  rate-limiter:50051
+#   redis         toxiproxy:6380   →  redis:6379
+#   postgres      toxiproxy:5433   →  postgres:5432
 #
-# Chaos commands (proxy name = rate-limiter):
-#   # Inject 500ms latency → exceeds 100ms gRPC timeout → circuit breaker opens → fail-open
-#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t latency -a latency=500 rate-limiter
+# Chaos commands (examples):
+#   # Redis: inject 200ms latency
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t latency -a latency=200 redis
 #
-#   # Complete failure → immediate fail-open
-#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t timeout -a timeout=0 rate-limiter
+#   # Postgres: drop all connections
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t timeout -a timeout=0 postgres
 #
-#   # Inspect active toxics
-#   docker exec zhejian-toxiproxy /toxiproxy-cli inspect rate-limiter
-#
-#   # Remove toxic (use auto-name: latency_downstream / timeout_downstream)
-#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic delete -n latency_downstream rate-limiter
+#   # Remove toxic (auto-name: latency_downstream / timeout_downstream)
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic delete -n latency_downstream redis
 
 services:
   # Toxiproxy - transparent TCP proxy for chaos injection
@@ -25,10 +24,12 @@ services:
     image: ghcr.io/shopify/toxiproxy:2.7.0
     container_name: zhejian-toxiproxy
     ports:
-      - "8474:8474"   # Toxiproxy REST API (for CLI chaos commands)
-      - "50052:50052" # rate-limiter proxy (gateway connects here)
+      - "8474:8474"   # REST API
+      - "50052:50052" # rate-limiter proxy
+      - "6380:6380"   # redis proxy
+      - "5433:5433"   # postgres proxy
 
-  # One-shot init: registers the rate-limiter proxy rule on startup
+  # One-shot init: registers all proxy rules on startup
   toxiproxy-init:
     image: curlimages/curl:8.11.1
     container_name: zhejian-toxiproxy-init
@@ -36,15 +37,34 @@ services:
     command:
       - /bin/sh
       - -c
-      - "until curl -sf http://toxiproxy:8474/proxies > /dev/null; do sleep 1; done && curl -s -X POST http://toxiproxy:8474/proxies -H 'Content-Type: application/json' -d '{\"name\":\"rate-limiter\",\"listen\":\"0.0.0.0:50052\",\"upstream\":\"rate-limiter:50051\"}' && echo 'Toxiproxy configured: rate-limiter:50051 -> toxiproxy:50052'"
+      - |
+        until curl -sf http://toxiproxy:8474/proxies > /dev/null; do sleep 1; done
+        curl -sf -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"rate-limiter","listen":"0.0.0.0:50052","upstream":"rate-limiter:50051"}'
+        curl -sf -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"redis","listen":"0.0.0.0:6380","upstream":"redis:6379"}'
+        curl -sf -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"postgres","listen":"0.0.0.0:5433","upstream":"postgres:5432"}'
+        echo 'Toxiproxy configured: rate-limiter, redis, postgres'
     depends_on:
       - toxiproxy
     restart: "no"
 
-  # Override gateway: route rate-limiter calls through toxiproxy
+  # Override gateway: route all dependencies through toxiproxy
   gateway:
     environment:
       - RATE_LIMITER_ADDR=toxiproxy:50052
+      - CACHE_HOST=toxiproxy
+      - CACHE_PORT=6380
+      # Tighten Redis timeouts so latency injection in Scenario 2 (200 ms)
+      # reliably exceeds the client deadline and triggers the circuit breaker.
+      - CACHE_READ_TIMEOUT=100ms
+      - CACHE_WRITE_TIMEOUT=100ms
+      - DB_HOST=toxiproxy
+      - DB_PORT=5433
     depends_on:
       toxiproxy-init:
         condition: service_completed_successfully

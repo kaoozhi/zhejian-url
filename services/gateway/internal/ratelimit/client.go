@@ -80,3 +80,7 @@ func (c *Client) Check(ctx context.Context, ip string) (allowed bool, remaining 
 func (c *Client) Close() error {
 	return c.conn.Close()
 }
+
+func (c *Client) CBState() string {
+	return c.cb.State().String()
+}

@@ -64,7 +64,7 @@ func TestNewCacheClient(t *testing.T) {
 		connString, err := testCache.Container().ConnectionString(ctx)
 		require.NoError(t, err, "failed to get connection string")
 
-		client, err := infra.NewCacheClient(ctx, connString)
+		client, err := infra.NewCacheClient(ctx, connString, 0, 0)
 		require.NoError(t, err)
 		defer client.Close()
 
@@ -72,12 +72,12 @@ func TestNewCacheClient(t *testing.T) {
 	})
 
 	t.Run("error - invalid connection string", func(t *testing.T) {
-		_, err := infra.NewCacheClient(ctx, "invalid://connection")
+		_, err := infra.NewCacheClient(ctx, "invalid://connection", 0, 0)
 		require.Error(t, err, "expected error for invalid connection string")
 	})
 
 	t.Run("error - unreachable host", func(t *testing.T) {
-		_, err := infra.NewCacheClient(ctx, "redis://localhost:59999")
+		_, err := infra.NewCacheClient(ctx, "redis://localhost:59999", 0, 0)
 		require.Error(t, err, "expected error for unreachable host")
 	})
 }

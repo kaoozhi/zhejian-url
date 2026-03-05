@@ -89,6 +89,14 @@ func (m *MockCache) Ping(ctx context.Context) error {
 	return nil
 }
 
+type MockCBStateProvider struct {
+	state string
+}
+
+func (m *MockCBStateProvider) CBState() string {
+	return m.state
+}
+
 func TestHandler_HealthCheck(t *testing.T) {
 	t.Run("returns ok when all dependencies are healthy", func(t *testing.T) {
 		mockService := new(MockURLService)
@@ -561,4 +569,57 @@ func TestHandler_Redirect(t *testing.T) {
 
 		mockService.AssertExpectations(t)
 	})
+}
+
+// TestHealthCheck_ExposesCircuitBreakerState verifies CB state appears in response.
+func TestHealthCheck_ExposesCircuitBreakerState(t *testing.T) {
+	mockDB := &MockDB{shouldFail: false}
+	mockCache := &MockCache{shouldFail: false}
+
+	mockCBProvider := &MockCBStateProvider{state: "open"}
+
+	handler := api.NewHandler(&MockURLService{}, mockDB, mockCache, newTestLogger(), nil).WithCBProviders(mockCBProvider, mockCBProvider)
+
+	router := setupTestRouter(handler)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&response)
+	assert.Equal(t, "degraded", response["status"])
+	deps := response["dependencies"].(map[string]interface{})
+	assert.Equal(t, "up", deps["database"])
+	assert.Equal(t, "degraded", deps["cache"])
+	assert.Equal(t, "open", deps["cache_cb"])
+	assert.Equal(t, "open", deps["rate_limiter_cb"])
+}
+
+// TestHealthCheck_CacheDownAndCBOpen verifies that deps["cache"] stays "down" (not
+// overwritten to "degraded") when both the cache Ping fails and the CB is open.
+func TestHealthCheck_CacheDownAndCBOpen(t *testing.T) {
+	mockDB := &MockDB{shouldFail: false}
+	mockCache := &MockCache{shouldFail: true}
+
+	mockCBProvider := &MockCBStateProvider{state: "open"}
+
+	handler := api.NewHandler(&MockURLService{}, mockDB, mockCache, newTestLogger(), nil).WithCBProviders(mockCBProvider, nil)
+
+	router := setupTestRouter(handler)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+	var response map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&response)
+	assert.Equal(t, "degraded", response["status"])
+	deps := response["dependencies"].(map[string]interface{})
+	assert.Equal(t, "down", deps["cache"])
+	assert.Equal(t, "open", deps["cache_cb"])
 }
