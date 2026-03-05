@@ -42,11 +42,12 @@ type DatabaseConfig struct {
 
 // Redis Caching Layer configuration
 type CacheConfig struct {
-	Host         string
-	Port         string
-	TTL          time.Duration
-	ReadTimeout  time.Duration // per-operation read deadline; 0 = go-redis default (3 s)
-	WriteTimeout time.Duration // per-operation write deadline; 0 = go-redis default (3 s)
+	Host             string
+	Port             string
+	TTL              time.Duration
+	ReadTimeout      time.Duration // per-operation read deadline; 0 = go-redis default (3 s)
+	WriteTimeout     time.Duration // per-operation write deadline; 0 = go-redis default (3 s)
+	OperationTimeout time.Duration // context deadline for each cache call
 }
 
 // AppConfig holds application-specific configuration
@@ -94,11 +95,12 @@ func Load() *Config {
 			// MaxConnIdle: 30 * time.Minute,
 		},
 		Cache: CacheConfig{
-			Host:         getEnv("CACHE_HOST", "localhost"),
-			Port:         getEnv("CACHE_PORT", "6379"),
-			TTL:          getEnvDuration("CACHE_TTL", 5*time.Minute),
-			ReadTimeout:  getEnvDuration("CACHE_READ_TIMEOUT", 500*time.Millisecond),
-			WriteTimeout: getEnvDuration("CACHE_WRITE_TIMEOUT", 500*time.Millisecond),
+			Host:             getEnv("CACHE_HOST", "localhost"),
+			Port:             getEnv("CACHE_PORT", "6379"),
+			TTL:              getEnvDuration("CACHE_TTL", 5*time.Minute),
+			ReadTimeout:      getEnvDuration("CACHE_READ_TIMEOUT", 500*time.Millisecond),
+			WriteTimeout:     getEnvDuration("CACHE_WRITE_TIMEOUT", 500*time.Millisecond),
+			OperationTimeout: getEnvDuration("CACHE_OPERATION_TIMEOUT", 50*time.Millisecond),
 		},
 		App: AppConfig{
 			BaseURL:          getEnv("BASE_URL", "http://localhost:8080"),
