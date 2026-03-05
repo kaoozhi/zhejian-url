@@ -131,6 +131,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'  # required for k6 remote write output
     ports:
       - "9090:9090"
     volumes:
