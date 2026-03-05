@@ -1,0 +1,80 @@
+name: Load Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/baseline.js'
+      - 'services/gateway/**'
+      - 'services/rate-limiter/**'
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'EOF'
+          DB_HOST=postgres
+          DB_PORT=5432
+          DB_USER=zhejian
+          DB_PASSWORD=zhejian_secret
+          DB_NAME=urlshortener
+          DB_SSLMODE=disable
+          CACHE_HOST=redis
+          CACHE_PORT=6379
+          CACHE_TTL=5
+          RATE_LIMITER_ADDR=rate-limiter:50051
+          RATE_LIMITER_TIMEOUT=100ms
+          RATE_LIMIT=100
+          BURST=50
+          EOF
+
+      - name: Start services
+        uses: hoverkraft-tech/compose-action@05da55b2bb8a5a759d1c4732095044bd9018c050 # v2.4.3
+        with:
+          compose-file: "./docker-compose.prod.yml"
+          up-flags: "-d"
+
+      - name: Wait for gateway to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://localhost:8080/health > /dev/null; then
+              echo "Gateway healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Gateway health check timed out"
+              docker compose -f docker-compose.prod.yml logs gateway
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Run baseline load test (CI mode — 1+2+1 min)
+        run: |
+          CI=true K6_WEB_DASHBOARD_EXPORT=results/baseline-report.html \
+          k6 run tests/baseline.js
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-baseline-report
+          path: results/baseline-report.html
+          retention-days: 30
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.prod.yml logs --tail=100
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.prod.yml down -v
