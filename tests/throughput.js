@@ -26,7 +26,7 @@ const WEIGHTS = [40, 20, 8, 7, 6, 5, 5, 5, 2, 2];
 export const options = {
     stages: [
         { duration: '30s', target: 200 },
-        { duration: '3m',  target: 200 },
+        { duration: '1m30s',  target: 200 },
         { duration: '30s', target: 0   },
     ],
     thresholds: {

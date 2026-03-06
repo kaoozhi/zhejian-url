@@ -1,8 +1,9 @@
 // tests/spike.js
 //
-// Spike test: 50 → 300 → 50 VUs over ~5 minutes.
+// Spike test: 100 → 1000 → 100 VUs over ~5 minutes.
 // Validates the system does not error under sudden load increase.
 // Error rate must stay below 1% throughout — latency may increase during spike.
+// Tuned for WSL2 with ~16 GB RAM: safe ceiling ~1000–1200 VUs.
 //
 // Run:
 //   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/spike-report.html \
@@ -18,17 +19,18 @@ const WEIGHTS = [40, 20, 8, 7, 6, 5, 5, 5, 2, 2];
 
 export const options = {
     stages: [
-        { duration: '1m',  target: 50  }, // warm up
-        { duration: '30s', target: 300 }, // spike
-        { duration: '1m',  target: 300 }, // hold at peak
-        { duration: '30s', target: 50  }, // recover
-        { duration: '1m',  target: 50  }, // cooldown
+        { duration: '1m',  target: 100  }, // warm up
+        { duration: '30s', target: 1000 }, // spike
+        { duration: '1m',  target: 1000 }, // hold at peak
+        { duration: '30s', target: 100  }, // recover
+        { duration: '1m',  target: 100  }, // cooldown
     ],
     thresholds: {
         // Error rate must not degrade during spike.
         // Latency is expected to increase — no p95 threshold.
         http_req_failed: ['rate<0.01'],
     },
+    gracefulStop: '5s', // default is 30s
 };
 
 export function setup() {
