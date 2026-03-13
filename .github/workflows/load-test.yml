@@ -2,12 +2,6 @@ name: Load Test
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'tests/baseline.js'
-      - 'services/gateway/**'
-      - 'services/rate-limiter/**'
 
 jobs:
   baseline:
