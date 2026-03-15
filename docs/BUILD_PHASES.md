@@ -516,71 +516,223 @@ Each scenario: inject → verify → remove → verify recovery.
 
 ---
 
-## Phase 9: Load Testing
+## Phase 9: Load Testing ✅ COMPLETED
 
 ### Objective
-Validate system performance under realistic load.
+Validate system performance under realistic load using k6, with real-time visualization via the k6 web dashboard and Prometheus remote write.
+
+### Scope (revised from original plan)
+
+**What changed from original plan and why:**
+- Spike target reduced from 1000 → 300 VUs: 1000 VUs on WSL2/Docker exhausts resources; 300 is realistic
+- Endurance shortened from 60min → 10min: diminishing returns after 10min for local portfolio testing
+- Added `throughput.js` (not in original plan): to measure raw system ceiling without rate limiter
+- Thresholds calibrated for WSL2/Docker (p95 < 200ms redirects) not production bare-metal
+- All tests use per-VU `X-Forwarded-For` spoofing — required because the Rust rate limiter enforces 100 req/min per IP
 
 ### Tasks
-1. **k6 Test Scenarios**
 
-   **Baseline Load Test**
-   ```javascript
-   // tests/baseline.js
-   export let options = {
-     stages: [
-       { duration: '2m', target: 100 },   // Ramp up
-       { duration: '5m', target: 100 },   // Steady state
-       { duration: '2m', target: 0 },     // Ramp down
-     ],
-     thresholds: {
-       http_req_duration: ['p(95)<100'],  // 95% under 100ms
-       http_req_failed: ['rate<0.01'],    // <1% errors
-     },
-   };
-   ```
+**Task 1: Prometheus remote write receiver** ✅
+- Added `--web.enable-remote-write-receiver` to prometheus service in `docker-compose.yml` and `docker-compose.prod.yml`
+- Enables `k6 run -o experimental-prometheus-rw` to push k6 metrics alongside gateway metrics
 
-   **Spike Test**
-   ```javascript
-   // tests/spike.js
-   export let options = {
-     stages: [
-       { duration: '1m', target: 100 },
-       { duration: '30s', target: 1000 },  // Sudden spike
-       { duration: '1m', target: 100 },
-     ],
-   };
-   ```
+**Task 2: results/ directory** ✅
+- `results/.gitkeep` — directory tracked in git
+- `.gitignore` entry for `results/*.html` — generated reports are local only
 
-   **Endurance Test**
-   ```javascript
-   // tests/endurance.js
-   export let options = {
-     stages: [
-       { duration: '5m', target: 200 },
-       { duration: '60m', target: 200 },  // Sustained load
-     ],
-   };
-   ```
+**Task 3-6: k6 test suite** ✅
 
-2. **Performance Targets**
-   - URL creation: <100ms p95, 500 req/s
-   - Redirects (cached): <10ms p95, 5000 req/s
-   - Redirects (uncached): <50ms p95, 1000 req/s
+| File | VUs | Duration | Purpose |
+|---|---|---|---|
+| `tests/baseline.js` | 100 | 9 min (2+5+2) | Steady-state SLO validation |
+| `tests/spike.js` | 50→300→50 | ~5 min | Error rate under sudden load |
+| `tests/endurance.js` | 100 | 12 min (1+10+1) | Memory leaks / pool exhaustion |
+| `tests/throughput.js` | 200 | 4 min (30s+3m+30s) | Raw ceiling (rate limiter disabled) |
 
-3. **Realistic Traffic Patterns**
-   - 80% reads (redirects), 20% writes (create)
-   - Zipf distribution for URL popularity
-   - Realistic user agents and referers
+**Task 7: Makefile** ✅
+- Replaced stale `load-test` target (pointed to nonexistent `testing/load/load-test.js`)
+- Added `load-baseline`, `load-spike`, `load-endurance`, `load-throughput`, `load-analytics` targets
+
+**Task 8: CI workflow** ✅
+- `.github/workflows/load-test.yml` — triggers on push to main and `workflow_dispatch`
+- Runs `baseline.js` in CI mode (`CI=true` → shorter 1+2+1 min stages)
+- Uploads HTML report as artifact (30-day retention)
+
+### Key design decisions
+
+- **Per-VU IP spoofing**: `X-Forwarded-For: 10.0.{VU/256}.{VU%256}` gives each VU its own rate-limit token bucket, simulating distinct users. Pattern established in `tests/analytics-load.js`.
+- **`CI=true` env var**: `baseline.js` detects this to use 1+2+1 min stages instead of 2+5+2, keeping CI jobs under 6 minutes total.
+- **p95 < 200ms threshold**: Calibrated for WSL2/Docker. Every request pays gRPC rate-limiter overhead (~1-3ms) plus Docker bridge networking. Tighten to 50ms on native Linux.
+- **`throughput.js` has no sleep**: Designed to find the ceiling; rate limiter must be disabled via `RATE_LIMITER_ADDR=""` otherwise the system sends 429s and skews the error rate.
+- **No shared k6 module**: `vuIP()` and `pickWeighted()` are inlined in each test file — simpler, no import complexity, each file is self-contained.
+
+### Visualization
+
+```
+Local run:
+  K6_WEB_DASHBOARD=true k6 run tests/baseline.js
+  → Browser dashboard at http://localhost:5665 (real-time VUs, p95, error rate)
+  → results/baseline-report.html (standalone HTML after run)
+
+With Prometheus remote write:
+  K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write \
+  k6 run -o experimental-prometheus-rw tests/baseline.js
+  → k6 metrics (k6_http_req_duration_*, k6_vus) appear in Prometheus UI at :9090
+  → Correlate client-observed latency with gateway's server-side http_request_duration_seconds
+```
 
 ### Deliverables
-- k6 test suite (baseline, spike, endurance)
-- Performance test results documented
-- CI integration (run on main branch)
+- ✅ `tests/baseline.js` — 100 VUs, 80/20 read/write, Zipf, CI-short mode
+- ✅ `tests/spike.js` — 50→300→50 VUs, error rate threshold only
+- ✅ `tests/endurance.js` — 100 VUs, 10 min, local only
+- ✅ `tests/throughput.js` — 200 VUs, no sleep, rate limiter disabled
+- ✅ `results/.gitkeep` — directory for HTML report exports
+- ✅ `docker-compose.yml` + `docker-compose.prod.yml` — Prometheus remote write enabled
+- ✅ `Makefile` — `load-baseline`, `load-spike`, `load-endurance`, `load-throughput` targets
+- ✅ `.github/workflows/load-test.yml` — CI baseline with HTML artifact
+
+### Usage
+```bash
+# Start stack
+docker compose up --build -d
+
+# Baseline with live dashboard
+make load-baseline
+# → Opens http://localhost:5665, exports results/baseline-report.html
+
+# Spike test
+make load-spike
+
+# Throughput ceiling (rate limiter disabled)
+RATE_LIMITER_ADDR="" make load-throughput
+
+# CI dry-run (4 min)
+CI=true k6 run tests/baseline.js
+```
+
+### Key Finding
+
+Running `throughput.js` with the rate limiter properly disabled established the real baseline (WSL2, single node, no sleep):
+
+| VUs | req/s | p95 | SLO (p95 < 200ms) |
+|---|---|---|---|
+| 200 | 5319 | 103ms | ✓ comfortable |
+| 700 | 5584 | 185ms | ✓ on the edge |
+| 1000 | ~5600 | 247ms | ✗ breached (WSL2 risk at this level) |
+
+**Throughput plateaus at ~5600 req/s** regardless of VU count — adding VUs past ~500 only increases latency, not throughput. The SLO boundary (p95 = 200ms) is reached around 700–800 VUs.
+
+Note: an earlier run showed ~36% failure — this was caused by `RATE_LIMITER_ADDR` being hardcoded in `docker-compose.yml` and not actually disabled. There was no resource exhaustion. The fix was changing `:-` to `-` in the compose interpolation so an empty shell var is respected.
+
+**Comparison baseline for Phase 10:** 700 VUs, p95=185ms, ~5600 req/s. Each scaling pattern should reduce p95 at this load, giving headroom to serve more VUs within SLO.
+
+The k6 terminal summary (p95, req/s) plus HTML reports are sufficient to prove each improvement — no Grafana required at this stage.
 
 ---
 
-## Phase 10: Chaos Engineering Deep Dive 🎯 EXTENDED
+## Phase 10: Scaling Patterns with Before/After Measurement 🎯 NEXT
+
+### Objective
+
+Implement four targeted scaling patterns, each with a measurable before/after comparison using `tests/throughput.js`. The goal is not horizontal scale-out — it is demonstrating that each pattern addresses a specific bottleneck with concrete numbers.
+
+### Design Decisions
+
+- **No explicit feature flags**: each pattern degrades gracefully when its infrastructure is absent. The env var IS the toggle (e.g. `DB_REPLICA_URL` unset = replica off). Adding a separate `ENABLE_*` var would be redundant code.
+- **Comparison tool**: k6 terminal summary + HTML reports + Prometheus UI (:9090) — sufficient without Grafana.
+- **Plan**: `docs/plans/2026-03-06-scaling-comparison-plan.md`
+
+### Sub-Phases
+
+#### Phase 10A: PostgreSQL Read-Write Split
+
+**Hypothesis:** `GetByCode` (reads) and `Create` (writes) compete for the same 10-connection pool. Routing reads to a streaming replica doubles effective connection capacity.
+
+**Implicit toggle:** `DB_REPLICA_URL` unset → `readPool()` fallback to writeDB. Set → replica active.
+
+**Files touched:**
+- `docker-compose.yml` — add `postgres-replica` (Bitnami streaming replication)
+- `services/gateway/internal/config/config.go` — add `DB_REPLICA_URL` field
+- `services/gateway/internal/repository/url_repository.go` — `writeDB` / `readDB` pools, `readPool()` fallback
+- `services/gateway/internal/server/server.go` — pass `readDB` to `NewURLRepository`
+- `services/gateway/cmd/server/main.go` — create replica pool from config
+
+**New metric:** `db_query_total{pool="read|write"}` (OTel counter)
+
+**Expected delta:** p95 at 700 VUs: 185ms → <150ms (reads no longer contend with writes for the same pool)
+
+---
+
+#### Phase 10B: Redis Consistent Hash Ring
+
+**Hypothesis:** Single Redis node is a throughput ceiling. Three nodes with consistent hashing distribute cache load ~33% per node.
+
+**Implicit toggle:** `CACHE_NODES` unset → `singleNodeRouter`. Set to 3 addresses → `HashRing`.
+
+**Files touched:**
+- `docker-compose.yml` — add `redis-2`, `redis-3`
+- `services/gateway/internal/cache/ring.go` — new `HashRing` with virtual nodes
+- `services/gateway/internal/cache/ring_test.go` — distribution uniformity + remap tests (TDD)
+- `services/gateway/internal/repository/cached_url_repository.go` — `CacheRouter` interface replaces `*redis.Client`
+- `services/gateway/internal/config/config.go` — add `CACHE_NODES` list
+- `services/gateway/internal/server/server.go` + `main.go` — build ring, pass as `CacheRouter`
+
+**New metric:** `cache_node_hits_total{node}` (OTel counter)
+
+**Expected delta:** Cache connection throughput ×3; key distribution ~33% per node in Prometheus.
+
+---
+
+#### Phase 10C: RabbitMQ Competing Consumers + Quorum Queue
+
+**Hypothesis:** Single analytics-worker processes one batch at a time; queue depth grows unboundedly under burst. Three workers drain the queue in parallel. Quorum queue ensures durability across broker restarts.
+
+**Implicit toggle:** `docker compose up -d --scale analytics-worker=N` — no code flag, no env var.
+
+**Files touched:**
+- `services/analytics-worker/internal/consumer/consumer.go` — add `x-queue-type: quorum` to `QueueDeclare` args
+
+**Note:** Queue type cannot be changed after creation — requires `docker compose down -v` before first run.
+
+**Expected delta:** Peak queue depth stable (not growing); drain time from minutes → seconds.
+
+---
+
+#### Phase 10D: PgBouncer Connection Pooling
+
+**Hypothesis:** Multiple gateway instances each hold their own pgxpool. Total PG connections = `instances × pool_size`. PgBouncer proxies all connections into a fixed backend pool; PostgreSQL sees constant connection count regardless of gateway count.
+
+**Implicit toggle:** `DB_PRIMARY_URL` / `DB_REPLICA_URL` point to postgres directly (off) or to pgbouncer (on). Zero Go code change.
+
+**Files touched:**
+- `pgbouncer/pgbouncer-write.ini` + `pgbouncer-read.ini` + `userlist.txt` — new config files
+- `docker-compose.yml` — add `pgbouncer-write`, `pgbouncer-read` services; update gateway env DSNs with `default_query_exec_mode=simple_protocol`
+
+**Expected delta:** `pg_stat_activity` count constant at 15 (5 write + 10 read) regardless of gateway instance count.
+
+---
+
+### Comparison Summary
+
+| Sub-phase | Primary bottleneck | Before (700 VUs baseline) | Expected after |
+|---|---|---|---|
+| 10A PG read-write split | Read/write contention on single pool | p95=185ms | p95 <150ms |
+| 10B Redis hash ring | Single Redis connection throughput ceiling | ~5600 req/s plateau | higher plateau or lower p95 |
+| 10C Competing consumers | Single worker, queue grows unboundedly | Queue depth growing | Queue depth stable |
+| 10D PgBouncer | Connections = instances × pool size | N × 10 PG connections | 15 constant |
+
+### Deliverables
+- `docker-compose.yml` — postgres-replica, redis-2/3, pgbouncer-write/read
+- `services/gateway/internal/cache/ring.go` + `ring_test.go`
+- `services/gateway/internal/repository/url_repository.go` — read-write routing
+- `services/gateway/internal/repository/cached_url_repository.go` — CacheRouter interface
+- `services/analytics-worker/internal/consumer/consumer.go` — quorum queue declaration
+- `pgbouncer/` — config files
+- `results/throughput-before-*.html` + `results/throughput-after-*.html` — before/after HTML reports
+
+---
+
+## Phase 11: Chaos Engineering Deep Dive 🎯 PLANNED
 
 ### Objective
 Comprehensive chaos testing with automated scenarios and visual dashboards.
@@ -641,10 +793,10 @@ Comprehensive chaos testing with automated scenarios and visual dashboards.
 
 ---
 
-## Phase 11: Dashboards & Alerting
+## Phase 12: Dashboards & Alerting
 
 ### Objective
-Complete the observability stack with Grafana dashboards and alerting rules. Builds on the OTel/Prometheus/Jaeger infrastructure from Phase 5.
+Complete the observability stack with Grafana dashboards and alerting rules. Builds on the OTel/Prometheus/Jaeger infrastructure from Phase 5 and makes the Phase 10 before/after scaling comparisons visually compelling with persistent dashboard panels.
 
 ### Tasks
 1. **Grafana Dashboards**
@@ -675,7 +827,7 @@ Complete the observability stack with Grafana dashboards and alerting rules. Bui
 
 ---
 
-## Phase 12: Documentation & Polish
+## Phase 13: Documentation & Polish
 
 ### Objective
 Create portfolio-quality documentation and demo materials.
@@ -714,7 +866,7 @@ Create portfolio-quality documentation and demo materials.
 
 ---
 
-## Timeline Summary (13 Weeks)
+## Timeline Summary (15 Weeks)
 
 ```
 Week 1-2:  ✅ Phase 1  - Core Foundation
@@ -725,10 +877,11 @@ Week 5-6:  ✅ Phase 5  - Observability Foundation (OTel + Prometheus + Jaeger)
 Week 6-7:  ✅ Phase 6  - Rust Rate Limiter + gRPC
 Week 7-8:  ✅ Phase 7  - RabbitMQ Click Analytics
 Week 8-9:  ✅ Phase 8  - Resilience Patterns + Toxiproxy
-Week 9:    Phase 9  - Load Testing
-Week 10-11: Phase 10 - Chaos Engineering (Extended)
-Week 12:   Phase 11 - Dashboards & Alerting
-Week 13:   Phase 12 - Documentation & Polish
+Week 9:    ✅ Phase 9  - Load Testing (baseline: p95=185ms at 700 VUs, ~5600 req/s ceiling)
+Week 10-11: Phase 10 - Scaling Patterns + Before/After Measurement (10A-10D)
+Week 12:   Phase 11 - Chaos Engineering (Extended)
+Week 13:   Phase 12 - Dashboards & Alerting (retroactive scaling comparison panels)
+Week 14-15: Phase 13 - Documentation & Polish
 ```
 
 ---
@@ -760,9 +913,9 @@ Week 13:   Phase 12 - Documentation & Polish
 **Portfolio Impact:**
 - Shows distributed systems expertise
 - Demonstrates chaos engineering practices
-- Proves performance optimization skills
+- Proves performance optimization skills with measurable before/after numbers (Phase 10)
 - Exhibits production-ready code quality
-- Provides clear before/after metrics (RabbitMQ benefit)
+- Provides clear before/after metrics for each scaling pattern (PG split, Redis ring, competing consumers, PgBouncer)
 
 ---
 

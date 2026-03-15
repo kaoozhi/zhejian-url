@@ -49,3 +49,6 @@ temp/
 
 # workspace files
 *.code-workspace
+
+# k6 HTML reports
+results/*.html

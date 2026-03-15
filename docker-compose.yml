@@ -64,7 +64,7 @@ services:
       CACHE_HOST: ${CACHE_HOST:-redis}
       CACHE_PORT: ${CACHE_PORT:-6379}
       CACHE_TTL: ${CACHE_TTL:-5m}
-      RATE_LIMITER_ADDR: rate-limiter:50051
+      RATE_LIMITER_ADDR: ${RATE_LIMITER_ADDR-rate-limiter:50051}
       RATE_LIMITER_TIMEOUT: ${RATE_LIMITER_TIMEOUT:-100ms}
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
@@ -131,6 +131,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'  # required for k6 remote write output
     ports:
       - "9090:9090"
     volumes:
