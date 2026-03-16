@@ -12,56 +12,86 @@
 
 ## Measurement Framework
 
+### Established baseline (WSL2, single node)
+
+| VUs | req/s | p95 | SLO (p95 < 200ms) |
+|---|---|---|---|
+| 200 | 5800 | 70ms | ✓ comfortable |
+| 800 | 5800 | 212ms | ✓ on the edge |
+| 1000 | ~5600 | 247ms | ✗ breached |
+
+Throughput plateaus at ~5800 req/s (Little's Law: throughput = VUs / avg_latency). Adding VUs past ~500 only increases latency, not throughput. **Comparison baseline: 800 VUs, p95=212ms, ~5800 req/s.**
+
 ### Primary benchmark: `tests/throughput.js`
 
-```bash
-# Start stack (rate limiter disabled)
-docker compose up --build -d
+**Rate limiter must be disabled.** The `RATE_LIMITER_ADDR` env var uses single-hyphen `${RATE_LIMITER_ADDR-default}` syntax — empty string disables it. Use docker compose to restart the gateway, not k6 env prefix (which only affects the host process):
 
-# Run before each phase (save terminal output)
-RATE_LIMITER_ADDR="" \
-K6_WEB_DASHBOARD=true \
-K6_WEB_DASHBOARD_EXPORT=results/throughput-before-9a.html \
-k6 run tests/throughput.js
+```bash
+# Disable rate limiter and restart gateway
+RATE_LIMITER_ADDR="" docker compose up -d gateway
+
+# Verify disabled (rate_limiter_cb key absent means disabled)
+curl -s http://localhost:8080/health | jq 'has("rate_limiter_cb")'
+# Expected: false
 ```
 
-Key numbers to record from k6 terminal summary after each run:
+Run before and after each phase. Use `script -q -c` to capture terminal output AND generate HTML simultaneously (plain `tee` disables k6's TTY detection and prevents the HTML export):
 
-| Metric | Column to read |
+```bash
+K6_WEB_DASHBOARD_EXPORT=results/throughput-before-10a.html \
+script -q -c "k6 run tests/throughput.js" results/throughput-before-10a.log
+```
+
+Key numbers to record from the log:
+
+```bash
+grep -E "p\(95\)|http_reqs\b|http_req_failed" results/throughput-before-10a.log
+```
+
+| Metric | What it shows |
 |---|---|
-| `http_reqs` total | total throughput (req/s) |
-| `http_req_failed` rate | failure % |
-| `http_req_duration` p95 | latency under load |
-| `redirect 301` check pass rate | functional correctness |
+| `http_req_duration` p95 | primary comparison metric |
+| `http_reqs` req/s | throughput ceiling |
+| `http_req_failed` rate | should stay 0% |
 
-The baseline (before any scaling) shows ~36% failure rate at 200 VUs / no sleep. Each phase should reduce failures or increase throughput.
+### RabbitMQ queue depth benchmark (Phase 10C only)
 
-### Secondary benchmark: `tests/baseline.js`
-
-Used for Phase 9A and 9D. Shows the read/write split effect under a mixed workload (80% redirect, 20% create) with realistic VU count:
+`throughput.js` is the **load generator** for Phase 10C (it produces click events). The **comparison metric** is queue depth — p95 latency won't change since publishing is fire-and-forget:
 
 ```bash
-K6_WEB_DASHBOARD=true \
-K6_WEB_DASHBOARD_EXPORT=results/baseline-before-9a.html \
-k6 run tests/baseline.js
+# Terminal 1: generate load
+k6 run tests/throughput.js
+
+# Terminal 2: watch queue depth
+watch -n2 'docker compose exec rabbitmq rabbitmqctl list_queues name messages'
+# OR Prometheus: rabbitmq_queue_messages{queue="analytics.clicks"}
 ```
 
-### RabbitMQ queue depth benchmark
-
-Used for Phase 9C. Shows competing consumers draining faster:
-
-```bash
-# Send a burst of 5000 click events via k6, then watch queue depth in Prometheus
-# Prometheus query: rabbitmq_queue_messages{queue="analytics.clicks"}
-```
+Note: `tests/baseline.js` (100 VUs, rate limiter active) is **not used** for Phase 10 comparisons — at 100 VUs p95=5ms with vast headroom, no scaling pattern produces a visible delta. It remains the CI regression guard only.
 
 ---
 
-## Phase 9A: PostgreSQL Read-Write Split
+## Phase 10A: PostgreSQL Read-Write Split
 
 ### Hypothesis
 
-At 200 VUs no-sleep, `GetByCode` (redirects) and `Create` (writes) compete for the same 10-connection pool. Separating them onto primary (writes) and replica (reads) lets reads scale independently — expected reduction in connection exhaustion errors.
+At 700 VUs no-sleep, `GetByCode` (redirects) and `Create` (writes) compete for the same 10-connection pool. Under this load, Redis CB trips occasionally causing all reads to fall through to DB — both read and write operations contend for the same 10 connections, increasing latency. Separating them onto primary (writes) and replica (reads) eliminates the contention — expected p95 reduction from 185ms toward 150ms.
+
+### Result: Null result — implemented and reverted
+
+| Metric | Before 10A | After 10A | Delta |
+|---|---|---|---|
+| p95 | 212ms | 261ms | +49ms worse |
+| req/s | 5384 | 4481 | -17% |
+| failures | 0% | 0% | — |
+
+The after measurement was worse, not better. Three reasons:
+
+1. **DB pool was never the bottleneck.** With Redis cache hit rate high, only a small fraction of reads reach the DB at all. A 10-connection pool handles the fallback load easily — there was nothing to split.
+2. **Two PG containers on WSL2 compete for the same CPU/memory.** Running primary + replica on a single machine degrades both. The replica overhead outweighs any benefit.
+3. **Redis saturation is the real constraint.** When the circuit breaker opens under load, the problem is the CB state transition latency, not which DB pool handles the fallback.
+
+**Implementation was reverted.** Read-write split belongs in write-heavy or cache-cold workloads where the DB is demonstrably saturated. The code pattern (`writeDB`/`readDB` split with `readPool()` fallback) is sound — the infrastructure prerequisite (DB as bottleneck) simply doesn't hold here.
 
 ### Files
 
@@ -75,29 +105,37 @@ At 200 VUs no-sleep, `GetByCode` (redirects) and `Create` (writes) compete for t
 
 ---
 
-### Task 9A-0: Record the baseline
+### Task 10A-0: Record the baseline
 
-**Step 1: Run throughput test and save numbers**
+**Step 1: Disable rate limiter and run throughput test**
 
 ```bash
-docker compose up --build -d
-# wait for health: curl http://localhost:8080/health
+# Disable rate limiter (must restart gateway container, not just set shell env)
+RATE_LIMITER_ADDR="" docker compose up -d gateway
 
-RATE_LIMITER_ADDR="" \
-K6_WEB_DASHBOARD_EXPORT=results/throughput-before-9a.html \
-k6 run tests/throughput.js
+# Verify disabled
+curl -s http://localhost:8080/health | jq 'has("rate_limiter_cb")'
+# Expected: false
+
+# Run test — script preserves TTY so both HTML and log are generated
+K6_WEB_DASHBOARD_EXPORT=results/throughput-before-10a.html \
+script -q -c "k6 run tests/throughput.js" results/throughput-before-10a.log
 ```
 
-Record from terminal summary:
-- `http_reqs` (total req/s)
-- `http_req_failed` rate
-- `redirect 301` check pass %
+**Step 2: Extract key numbers**
 
-These are your "before" numbers. Keep the terminal output.
+```bash
+grep -E "p\(95\)|http_reqs\b|http_req_failed" results/throughput-before-10a.log
+```
+
+Record:
+- `http_req_duration` p95 — primary comparison metric (baseline: ~185ms)
+- `http_reqs` req/s — throughput ceiling (baseline: ~5600 req/s)
+- `http_req_failed` rate — should be 0%
 
 ---
 
-### Task 9A-1: Add postgres-replica to docker-compose.yml
+### Task 10A-1: Add postgres-replica to docker-compose.yml
 
 **Files:**
 - Modify: `docker-compose.yml`
@@ -181,7 +219,7 @@ git commit -m "feat(infra): add postgres-replica with streaming replication"
 
 ---
 
-### Task 9A-2: Add DB_REPLICA_URL to config
+### Task 10A-2: Add DB_REPLICA_URL to config
 
 **Files:**
 - Modify: `services/gateway/internal/config/config.go`
@@ -218,7 +256,7 @@ git commit -m "feat(config): add DB_REPLICA_URL for read replica"
 
 ---
 
-### Task 9A-3: Add read-write routing to URLRepository
+### Task 10A-3: Add read-write routing to URLRepository
 
 **Files:**
 - Modify: `services/gateway/internal/repository/url_repository.go`
@@ -333,7 +371,7 @@ git commit -m "feat(repository): read-write split — GetByCode uses readDB, wri
 
 ---
 
-### Task 9A-4: Wire replica pool in main.go and server.go
+### Task 10A-4: Wire replica pool in main.go and server.go
 
 **Files:**
 - Modify: `services/gateway/cmd/server/main.go`
@@ -403,7 +441,7 @@ git commit -m "feat(server): wire read replica pool into URLRepository"
 
 ---
 
-### Task 9A-5: Add Prometheus metrics for pool tracking
+### Task 10A-5: Add Prometheus metrics for pool tracking
 
 **Files:**
 - Modify: `services/gateway/internal/repository/url_repository.go`
@@ -452,7 +490,7 @@ git commit -m "feat(metrics): add db_query_total{pool} counter for read-write sp
 
 ---
 
-### Task 9A-6: Run the after load test and compare
+### Task 10A-6: Run the after load test and compare
 
 **Step 1: Rebuild and run throughput test**
 
@@ -460,7 +498,7 @@ git commit -m "feat(metrics): add db_query_total{pool} counter for read-write sp
 docker compose up --build -d
 
 RATE_LIMITER_ADDR="" \
-K6_WEB_DASHBOARD_EXPORT=results/throughput-after-9a.html \
+K6_WEB_DASHBOARD_EXPORT=results/throughput-after-10a.html \
 k6 run tests/throughput.js
 ```
 
@@ -480,19 +518,36 @@ rate(db_query_total{pool="write"}[1m])
 
 | Metric | Before | Expected after |
 |---|---|---|
-| `http_req_failed` | ~36% | <5% |
-| `redirect 301` pass | ~64% | >95% |
-| p95 latency | high | <200ms |
+| p95 at 700 VUs | ~185ms | <150ms |
+| `http_req_failed` | 0% | 0% (unchanged) |
+| `http_reqs` req/s | ~5600 | ≥5600 (plateau raises or stays) |
 
-**Interpretation:** The primary bottleneck was the single 10-connection pool serving both reads and writes. Reads (GetByCode on cache miss) now hit the replica, doubling effective connection capacity.
+**Interpretation:** Read operations (GetByCode on cache miss) no longer compete with writes for the same 10 connections. The replica pool absorbs read load independently — p95 latency drops as queue wait time for a free connection decreases.
 
 ---
 
-## Phase 9B: Redis Consistent Hash Ring
+## Phase 10B: Redis Consistent Hash Ring
+
+### Confirmed bottleneck evidence
+
+From gateway logs captured during Phase 10A throughput test (700 VUs, rate limiter disabled):
+
+```
+circuit breaker about to trip  consecutive_failures=5
+circuit breaker OPENED         closed → open
+cache read error: context deadline exceeded   ← Redis 50ms timeout exceeded
+  ... 30s open: all cache ops short-circuit, reads fall through to DB ...
+circuit breaker testing recovery  open → half-open
+cache read error: too many requests  ← MaxRequests=3 quota exhausted by concurrent goroutines
+circuit breaker RECOVERED      half-open → closed
+cache read error: too many requests  ← already failing again within the same second
+```
+
+The CB oscillates (open → recover → re-trip) because the single Redis node is saturated continuously. At ~5600 req/s each redirect does a GET + conditional SET = ~11,000 Redis ops/s. The 50ms `CACHE_OPERATION_TIMEOUT` is exceeded under this load, triggering CB open. The system never gets relief because load is constant.
 
 ### Hypothesis
 
-A single Redis node is a throughput ceiling. With 3 nodes and consistent hashing, cache load distributes ~33% per node, tripling cache connection capacity. Cache miss rate stays low (only the cached key's node going down causes misses for that key's ~33%).
+Three nodes with consistent hashing distribute load ~33% per node (~3700 ops/s each). Per-node pressure drops below the saturation threshold — the 50ms timeout stops being exceeded, CB no longer accumulates consecutive failures, and p95 drops as cache hits start landing reliably instead of timing out and falling back to DB.
 
 ### Files
 
@@ -507,19 +562,19 @@ A single Redis node is a throughput ceiling. With 3 nodes and consistent hashing
 
 ---
 
-### Task 9B-0: Record the baseline (if not already done in 9A)
+### Task 10B-0: Record the baseline (if not already done in 9A)
 
 Run the same throughput test and save the "before 9B" numbers:
 
 ```bash
 RATE_LIMITER_ADDR="" \
-K6_WEB_DASHBOARD_EXPORT=results/throughput-before-9b.html \
+K6_WEB_DASHBOARD_EXPORT=results/throughput-before-10b.html \
 k6 run tests/throughput.js
 ```
 
 ---
 
-### Task 9B-1: Add redis-2 and redis-3 to docker-compose.yml
+### Task 10B-1: Add redis-2 and redis-3 to docker-compose.yml
 
 **Files:**
 - Modify: `docker-compose.yml`
@@ -568,7 +623,7 @@ git commit -m "feat(infra): add redis-2 and redis-3 for consistent hash ring"
 
 ---
 
-### Task 9B-2: Add CACHE_NODES to config
+### Task 10B-2: Add CACHE_NODES to config
 
 **Files:**
 - Modify: `services/gateway/internal/config/config.go`
@@ -606,7 +661,7 @@ git commit -m "feat(config): add CACHE_NODES for multi-node Redis ring"
 
 ---
 
-### Task 9B-3: Implement HashRing
+### Task 10B-3: Implement HashRing
 
 **Files:**
 - New: `services/gateway/internal/cache/ring.go`
@@ -817,7 +872,7 @@ git commit -m "feat(cache): add HashRing with virtual nodes and Remove() support
 
 ---
 
-### Task 9B-4: Add CacheRouter interface to CachedURLRepository
+### Task 10B-4: Add CacheRouter interface to CachedURLRepository
 
 **Files:**
 - Modify: `services/gateway/internal/repository/cached_url_repository.go`
@@ -956,7 +1011,7 @@ git commit -m "feat(cache): CacheRouter interface + HashRing wired into CachedUR
 
 ---
 
-### Task 9B-5: Run the after load test and compare
+### Task 10B-5: Run the after load test and compare
 
 **Step 1: Run throughput test**
 
@@ -985,7 +1040,7 @@ rate(cache_node_hits_total{node="redis-3:6379"}[1m])
 
 ---
 
-## Phase 9C: RabbitMQ Competing Consumers + Quorum Queue
+## Phase 10C: RabbitMQ Competing Consumers + Quorum Queue
 
 ### Hypothesis
 
@@ -998,7 +1053,7 @@ A single analytics-worker processes one batch at a time. Under high redirect loa
 
 ---
 
-### Task 9C-0: Record the baseline queue depth
+### Task 10C-0: Record the baseline queue depth
 
 **Step 1: Run the throughput test while watching queue depth**
 
@@ -1016,7 +1071,7 @@ Record: peak queue depth and whether it drains after the test or keeps growing.
 
 ---
 
-### Task 9C-1: Change queue declaration to quorum type
+### Task 10C-1: Change queue declaration to quorum type
 
 **Files:**
 - Modify: `services/analytics-worker/internal/consumer/consumer.go`
@@ -1094,7 +1149,7 @@ git commit -m "feat(worker): declare analytics.clicks as quorum queue for replic
 
 ---
 
-### Task 9C-2: Adjust prefetch for competing consumers
+### Task 10C-2: Adjust prefetch for competing consumers
 
 **Files:**
 - Modify: `services/analytics-worker/internal/consumer/consumer.go`
@@ -1115,7 +1170,7 @@ No change needed.
 
 ---
 
-### Task 9C-3: Run the after load test with scaled workers
+### Task 10C-3: Run the after load test with scaled workers
 
 **Step 1: Start with 1 worker (baseline)**
 
@@ -1161,7 +1216,7 @@ SELECT COUNT(*) FROM analytics_clicks;
 
 ---
 
-## Phase 9D: PgBouncer (Optional Follow-Up to 9A)
+## Phase 10D: PgBouncer (Optional Follow-Up to 9A)
 
 ### Hypothesis
 
@@ -1178,7 +1233,7 @@ With multiple gateway instances, each holds its own pgxpool. Total PostgreSQL co
 
 ---
 
-### Task 9D-0: Demonstrate connection exhaustion (before)
+### Task 10D-0: Demonstrate connection exhaustion (before)
 
 **Step 1: Scale gateway to 3 instances**
 
@@ -1211,7 +1266,7 @@ Then `--scale gateway=3` + throughput test → connection refused errors.
 
 ---
 
-### Task 9D-1: Add PgBouncer config files
+### Task 10D-1: Add PgBouncer config files
 
 **Files:**
 - New: `pgbouncer/pgbouncer-write.ini`
@@ -1266,7 +1321,7 @@ postgres://zhejian:zhejian_secret@pgbouncer-write:5432/urlshortener?sslmode=disa
 
 ---
 
-### Task 9D-2: Add PgBouncer services to docker-compose.yml
+### Task 10D-2: Add PgBouncer services to docker-compose.yml
 
 **Files:**
 - Modify: `docker-compose.yml`
@@ -1311,7 +1366,7 @@ git commit -m "feat(infra): add PgBouncer write/read proxies for connection pool
 
 ---
 
-### Task 9D-3: Run the after load test and compare
+### Task 10D-3: Run the after load test and compare
 
 **Step 1: Run with 3 gateway instances**
 
@@ -1342,13 +1397,14 @@ SELECT count(*) FROM pg_stat_activity WHERE datname = 'urlshortener';
 
 ## Summary: Before/After Comparison Table
 
-| Phase | Primary bottleneck | Key metric | Before | Expected after |
+Comparison baseline: **700 VUs, p95=185ms, ~5600 req/s, 0% failure** (rate limiter disabled, WSL2).
+
+| Phase | Primary bottleneck | Comparison tool | Before | Expected after |
 |---|---|---|---|---|
-| Baseline | PG pool exhaustion (10 conns) | `http_req_failed` | ~36% | — |
-| 9A: PG read-write split | Single pool for reads+writes | `db_query_total{pool}` ratio | all writes | ~80-95% reads on replica |
-| 9B: Redis hash ring | Single Redis node throughput ceiling | `cache_node_hits_total` per node | 1 node 100% | 3 nodes ~33% each |
-| 9C: RabbitMQ scale-out | Single worker queue depth growth | `rabbitmq_queue_messages` peak depth | growing | stable / drains |
-| 9D: PgBouncer | Connection count × gateway instances | `pg_stat_activity` count | N × 10 | 15 constant |
+| 10A: PG read-write split | Read/write contention on single pool | `throughput.js` p95 | 185ms | <150ms |
+| 10B: Redis hash ring | Single Redis connection throughput ceiling | `throughput.js` p95 + req/s | ~5600 req/s plateau | higher plateau or lower p95 |
+| 10C: RabbitMQ competing consumers | Single worker, queue grows unboundedly | RabbitMQ queue depth during `throughput.js` | queue growing | queue stable / drains |
+| 10D: PgBouncer | Connections = instances × pool size | `pg_stat_activity` count | N × 10 | 15 constant |
 
 ---
 
@@ -1360,4 +1416,4 @@ For each phase, the story is:
 2. **"Here is the minimal code/infra change"** — show the diff (it's always small)
 3. **"Here is the measured improvement"** — show the after k6 terminal summary or Prometheus graph side-by-side
 
-The comparison is most compelling for Phase 9A (connection exhaustion → near-zero failures) and Phase 9C (queue depth 1 vs 3 workers side-by-side in the RabbitMQ UI).
+The comparison is most compelling for Phase 10A (connection exhaustion → near-zero failures) and Phase 10C (queue depth 1 vs 3 workers side-by-side in the RabbitMQ UI).
