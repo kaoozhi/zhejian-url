@@ -13,6 +13,7 @@ import (
 
 type ClientProvider interface {
 	ClientFor(key string) *redis.Client
+	NodeFor(key string) string // returns the node name/address owning this key
 	Close()
 	Ping(ctx context.Context) error
 }

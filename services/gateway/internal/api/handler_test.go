@@ -91,6 +91,7 @@ func (m *MockCache) Ping(ctx context.Context) error {
 }
 
 func (m *MockCache) ClientFor(_ string) *redis.Client { return nil }
+func (m *MockCache) NodeFor(_ string) string          { return "" }
 func (m *MockCache) Close()                           {}
 
 type MockCBStateProvider struct {

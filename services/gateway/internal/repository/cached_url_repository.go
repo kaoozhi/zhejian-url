@@ -158,7 +158,7 @@ func NewCachedURLRepository(db URLRepositoryInterface, cache cache.ClientProvide
 		metric.WithDescription("Circuit breaker state (0=closed, 1=half-open, 2=open)"),
 		metric.WithFloat64Callback(func(_ context.Context, o metric.Float64Observer) error {
 			o.Observe(float64(repo.cacheCB.State()), metric.WithAttributes(
-				attribute.String("name", "redis"),
+				attribute.String("name", "cache"),
 			))
 			return nil
 		}),
@@ -175,19 +175,22 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 
 	// Try cache first
 	if r.cache != nil {
+		node := r.cache.NodeFor(cacheKey)
+		nodeAttr := metric.WithAttributes(attribute.String("cache.node", node))
 		// Start span for cache lookup
 		ctx, span := tracer.Start(ctx, "cache.get",
 			trace.WithAttributes(
 				attribute.String("db.system", "redis"),
 				attribute.String("db.operation", "GET"),
 				attribute.String("cache.key", cacheKey),
+				attribute.String("cache.node", node),
 			),
 		)
 		cached, err := r.cacheGet(ctx, cacheKey)
 		if err == nil {
 			if cached == string(notFoundSentinel) {
 				span.SetAttributes(attribute.Bool("cache.hit", true))
-				r.cacheHits.Add(ctx, 1)
+				r.cacheHits.Add(ctx, 1, nodeAttr)
 				span.SetAttributes(attribute.Bool("cache.negative", true))
 				span.End()
 				return nil, ErrNotFound
@@ -195,7 +198,7 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 			var cachedURL model.URL
 			if err := json.Unmarshal([]byte(cached), &cachedURL); err == nil {
 				span.SetAttributes(attribute.Bool("cache.hit", true))
-				r.cacheHits.Add(ctx, 1)
+				r.cacheHits.Add(ctx, 1, nodeAttr)
 				span.End()
 				return &cachedURL, nil
 			}
@@ -212,7 +215,7 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 				slog.String("key", cacheKey))
 		}
 		span.SetAttributes(attribute.Bool("cache.hit", false))
-		r.cacheMisses.Add(ctx, 1)
+		r.cacheMisses.Add(ctx, 1, nodeAttr)
 		span.End()
 	}
 
@@ -253,6 +256,7 @@ func (r *CachedURLRepository) Create(ctx context.Context, url *model.URL) error 
 				attribute.String("db.system", "redis"),
 				attribute.String("db.operation", "SET"),
 				attribute.String("cache.key", cacheKey),
+				attribute.String("cache.node", r.cache.NodeFor(cacheKey)),
 			),
 		)
 		if data, err := json.Marshal(url); err == nil {
@@ -300,6 +304,7 @@ func (r *CachedURLRepository) Delete(ctx context.Context, code string) error {
 				attribute.String("db.system", "redis"),
 				attribute.String("db.operation", "DELETE"),
 				attribute.String("cache.key", cacheKey),
+				attribute.String("cache.node", r.cache.NodeFor(cacheKey)),
 			),
 		)
 		r.cacheDel(ctx, cacheKey)
