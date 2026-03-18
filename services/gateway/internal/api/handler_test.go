@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/zhejian/url-shortener/gateway/internal/api"
@@ -88,6 +89,9 @@ func (m *MockCache) Ping(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (m *MockCache) ClientFor(_ string) *redis.Client { return nil }
+func (m *MockCache) Close()                           {}
 
 type MockCBStateProvider struct {
 	state string

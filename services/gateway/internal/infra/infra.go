@@ -2,6 +2,7 @@ package infra
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -56,4 +57,27 @@ func NewCacheClient(ctx context.Context, connString string, readTimeout, writeTi
 	}
 
 	return rdb, nil
+}
+
+// NewCacheRings creates a Redis client for each node in cacheNodes (host:port format).
+// On partial failure, already-opened clients are closed before returning the error.
+func NewCacheRings(ctx context.Context, cacheNodes []string, readTimeout, writeTimeout time.Duration) (map[string]*redis.Client, error) {
+	clients := make(map[string]*redis.Client)
+	for _, node := range cacheNodes {
+		connString := nodeConnectionString(node)
+		client, err := NewCacheClient(ctx, connString, readTimeout, writeTimeout)
+		if err != nil {
+			for _, c := range clients {
+				c.Close()
+			}
+			return nil, fmt.Errorf("connecting to cache node %s: %w", node, err)
+		}
+		clients[node] = client
+	}
+
+	return clients, nil
+}
+
+func nodeConnectionString(node string) string {
+	return fmt.Sprintf("redis://%s/0", node)
 }

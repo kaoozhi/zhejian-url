@@ -16,6 +16,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sony/gobreaker"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -25,7 +26,7 @@ var tracer = otel.Tracer("gateway/repository")
 // It uses cache-aside for reads and write-through for writes.
 type CachedURLRepository struct {
 	db              URLRepositoryInterface
-	cache           *redis.Client
+	cache           cache.ClientProvider
 	ttl             time.Duration
 	requestGroup    *singleflight.Group
 	cacheCB         *gobreaker.CircuitBreaker
@@ -74,7 +75,7 @@ type CachedURLRepositoryOptions struct {
 }
 
 // NewCachedURLRepository creates a new cached URL repository.
-func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl time.Duration, logger *slog.Logger, opts ...CachedURLRepositoryOptions) *CachedURLRepository {
+func NewCachedURLRepository(db URLRepositoryInterface, cache cache.ClientProvider, ttl time.Duration, logger *slog.Logger, opts ...CachedURLRepositoryOptions) *CachedURLRepository {
 	cb := DefaultCBSettings()
 	if len(opts) > 0 && opts[0].CacheCB != nil {
 		cb = *opts[0].CacheCB
@@ -386,8 +387,10 @@ func rewriteCache(ctx context.Context, r *CachedURLRepository, cacheKey string, 
 func (r *CachedURLRepository) cacheGet(ctx context.Context, key string) (string, error) {
 	cacheCtx, cancel := context.WithTimeout(ctx, r.cacheTimeout)
 	defer cancel()
+
 	res, err := r.cacheCB.Execute(func() (interface{}, error) {
-		return r.cache.Get(cacheCtx, key).Result()
+		client := r.cache.ClientFor(key)
+		return client.Get(cacheCtx, key).Result()
 	})
 	if err != nil {
 		return "", err
@@ -399,7 +402,8 @@ func (r *CachedURLRepository) cacheSet(ctx context.Context, key string, data int
 	cacheCtx, cancel := context.WithTimeout(ctx, r.cacheTimeout)
 	defer cancel()
 	_, err := r.cacheCB.Execute(func() (interface{}, error) {
-		return nil, r.cache.Set(cacheCtx, key, data, ttl).Err()
+		client := r.cache.ClientFor(key)
+		return nil, client.Set(cacheCtx, key, data, ttl).Err()
 	})
 	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
 		r.totalErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "cache_write")))
@@ -413,7 +417,8 @@ func (r *CachedURLRepository) cacheDel(ctx context.Context, key string) {
 	cacheCtx, cancel := context.WithTimeout(ctx, r.cacheTimeout)
 	defer cancel()
 	_, err := r.cacheCB.Execute(func() (interface{}, error) {
-		return nil, r.cache.Del(cacheCtx, key).Err()
+		client := r.cache.ClientFor(key)
+		return nil, client.Del(cacheCtx, key).Err()
 	})
 	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
 		r.totalErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "cache_delete")))

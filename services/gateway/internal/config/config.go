@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -48,6 +49,7 @@ type CacheConfig struct {
 	ReadTimeout      time.Duration // per-operation read deadline; 0 = go-redis default (3 s)
 	WriteTimeout     time.Duration // per-operation write deadline; 0 = go-redis default (3 s)
 	OperationTimeout time.Duration // context deadline for each cache call
+	Nodes            []string
 }
 
 // AppConfig holds application-specific configuration
@@ -101,6 +103,10 @@ func Load() *Config {
 			ReadTimeout:      getEnvDuration("CACHE_READ_TIMEOUT", 500*time.Millisecond),
 			WriteTimeout:     getEnvDuration("CACHE_WRITE_TIMEOUT", 500*time.Millisecond),
 			OperationTimeout: getEnvDuration("CACHE_OPERATION_TIMEOUT", 50*time.Millisecond),
+			Nodes: getCacheNodes(
+				getEnv("CACHE_HOST", "localhost"),
+				getEnv("CACHE_PORT", "6379"),
+			),
 		},
 		App: AppConfig{
 			BaseURL:          getEnv("BASE_URL", "http://localhost:8080"),
@@ -158,4 +164,18 @@ func getEnvDuration(key string, defaultVal time.Duration) time.Duration {
 		}
 	}
 	return defaultVal
+}
+
+func getCacheNodes(defaultHost, defaultPort string) []string {
+	cacheNodesEnv := getEnv("CACHE_NODES", "")
+	if cacheNodesEnv == "" {
+		return []string{fmt.Sprintf("%s:%s", defaultHost, defaultPort)}
+	}
+	var cacheNodes []string
+	for _, node := range strings.Split(cacheNodesEnv, ",") {
+		if node = strings.TrimSpace(node); node != "" {
+			cacheNodes = append(cacheNodes, node)
+		}
+	}
+	return cacheNodes
 }

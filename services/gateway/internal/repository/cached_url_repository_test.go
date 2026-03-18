@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -55,7 +56,7 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Insert test data directly in DB
 		id := uuid.New()
@@ -80,7 +81,7 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Insert and fetch to cache it
 		id := uuid.New()
@@ -106,7 +107,7 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Fetch non-existent URL
 		_, err := repo.GetByCode(ctx, "notfound")
@@ -124,7 +125,7 @@ func TestCachedURLRepository_GetByCode(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Fetch non-existent to cache negative result
 		_, _ = repo.GetByCode(ctx, "negcache")
@@ -170,7 +171,7 @@ func TestCachedURLRepository_Create(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		url := &model.URL{
 			ID:          uuid.New(),
@@ -198,7 +199,7 @@ func TestCachedURLRepository_Create(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Fetch non-existent to create negative cache
 		_, _ = repo.GetByCode(ctx, "overwrite")
@@ -260,7 +261,7 @@ func TestCachedURLRepository_Delete(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Create and cache a URL
 		url := &model.URL{
@@ -290,7 +291,7 @@ func TestCachedURLRepository_Delete(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Try to delete non-existent
 		err := repo.Delete(ctx, "nonexistent")
@@ -335,7 +336,7 @@ func TestCachedURLRepository_CacheTTL(t *testing.T) {
 
 		cacheTTL := 10 * time.Minute
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Create a URL
 		url := &model.URL{
@@ -418,7 +419,7 @@ func TestCachedURLRepository_SingleFlight(t *testing.T) {
 		cacheTTL := 10 * time.Minute
 		dbRepo := NewURLRepository(testDB.Pool)
 		counter := &countingRepository{URLRepositoryInterface: dbRepo}
-		repo := NewCachedURLRepository(counter, testCache.Client, cacheTTL, newTestLogger())
+		repo := NewCachedURLRepository(counter, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, newTestLogger())
 
 		// Insert test data (cache is cold)
 		id := uuid.New()
@@ -474,7 +475,7 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 		defer badRedis.Close()
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, newTestLogger(), cbOpts)
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": badRedis}, 1), cacheTTL, newTestLogger(), cbOpts)
 
 		// Insert test data
 		id := uuid.New()
@@ -499,7 +500,7 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 		defer badRedis.Close()
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, newTestLogger(), cbOpts)
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": badRedis}, 1), cacheTTL, newTestLogger(), cbOpts)
 
 		// Trip the circuit breaker
 		tripCircuitBreaker(ctx, repo)
@@ -527,7 +528,7 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 		defer badRedis.Close()
 
 		dbRepo := NewURLRepository(testDB.Pool)
-		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, newTestLogger(), cbOpts)
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": badRedis}, 1), cacheTTL, newTestLogger(), cbOpts)
 
 		// Insert test data
 		id := uuid.New()
@@ -567,7 +568,7 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 			ConsecutiveFailures: 2,
 			OperationTimeout:    50 * time.Millisecond,
 		}}
-		repo := NewCachedURLRepository(dbRepo, badRedis, cacheTTL, newTestLogger(), recoverOpts)
+		repo := NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": badRedis}, 1), cacheTTL, newTestLogger(), recoverOpts)
 
 		// Insert test data
 		id := uuid.New()
@@ -581,7 +582,7 @@ func TestCachedURLRepository_CircuitBreaker(t *testing.T) {
 
 		// Swap to a working Redis by replacing the cache field.
 		// This simulates Redis coming back online.
-		repo.cache = testCache.Client
+		repo.cache = cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1)
 
 		// Wait for CB timeout to enter half-open state
 		time.Sleep(150 * time.Millisecond)
@@ -617,7 +618,7 @@ func TestCacheTimeout_TripsCircuitBreaker(t *testing.T) {
 	defer slowClient.Close()
 
 	repo := NewCachedURLRepository(
-		mockDB, slowClient, 5*time.Minute,
+		mockDB, cache.NewHashRing(map[string]*redis.Client{"node": slowClient}, 1), 5*time.Minute,
 		newTestLogger(),
 		CachedURLRepositoryOptions{CacheCB: &cb},
 	)

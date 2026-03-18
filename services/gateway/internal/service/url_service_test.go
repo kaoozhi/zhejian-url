@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/redis/go-redis/v9"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
@@ -481,7 +483,7 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		repo := repository.NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, testObs.Logger)
 		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Create a URL
@@ -508,7 +510,7 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		repo := repository.NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, testObs.Logger)
 		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Create and read a URL to cache it
@@ -538,7 +540,7 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		repo := repository.NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, testObs.Logger)
 		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Create and cache a URL
@@ -572,7 +574,7 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		repo := repository.NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, testObs.Logger)
 		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Try to get a non-existent URL
@@ -591,7 +593,7 @@ func TestURLService_WithCache(t *testing.T) {
 		testCache.Cleanup(ctx)
 
 		dbRepo := repository.NewURLRepository(testDB.Pool)
-		repo := repository.NewCachedURLRepository(dbRepo, testCache.Client, cacheTTL, testObs.Logger)
+		repo := repository.NewCachedURLRepository(dbRepo, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), cacheTTL, testObs.Logger)
 		service := NewURLService(repo, testObs.Logger, testCfg.App.BaseURL, testCfg.App.ShortCodeLen, testCfg.App.ShortCodeRetries)
 
 		// Try to get a non-existent URL (triggers negative caching)
