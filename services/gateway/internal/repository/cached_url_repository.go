@@ -68,7 +68,7 @@ func DefaultCBSettings() CBSettings {
 		MaxRequests:          3,
 		Interval:             10 * time.Second,
 		Timeout:              30 * time.Second,
-		ConsecutiveFailures:  5,
+		ConsecutiveFailures:  20,
 		FailureRateThreshold: 0.2,
 		MinRequestsToTrip:    50,
 		OperationTimeout:     50 * time.Millisecond,
@@ -129,7 +129,8 @@ func NewCachedURLRepository(db URLRepositoryInterface, cache cache.ClientProvide
 						slog.String("reason", "failure_rate"),
 						slog.Float64("failure_rate", failureRate),
 						slog.Uint64("requests", uint64(counts.Requests)),
-						slog.Uint64("failures", uint64(counts.TotalFailures)))
+						slog.Uint64("failures", uint64(counts.TotalFailures)),
+						slog.Duration("operation_timeout", cb.OperationTimeout))
 					return true
 				}
 			}
@@ -140,7 +141,8 @@ func NewCachedURLRepository(db URLRepositoryInterface, cache cache.ClientProvide
 					slog.String("name", "redis"),
 					slog.String("reason", "consecutive_failures"),
 					slog.Uint64("consecutive_failures", uint64(counts.ConsecutiveFailures)),
-					slog.Uint64("requests", uint64(counts.Requests)))
+					slog.Uint64("requests", uint64(counts.Requests)),
+					slog.Duration("operation_timeout", cb.OperationTimeout))
 				return true
 			}
 			return false

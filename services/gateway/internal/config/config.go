@@ -117,7 +117,7 @@ func Load() *Config {
 			),
 			CBMinRequests:         uint32(getEnvInt("CACHE_CB_MIN_REQUESTS", 50)),
 			CBFailureRate:         getEnvFloat64("CACHE_CB_FAILURE_RATE", 0.2),
-			CBConsecutiveFailures: uint32(getEnvInt("CACHE_CB_CONSECUTIVE_FAILURES", 5)),
+			CBConsecutiveFailures: uint32(getEnvInt("CACHE_CB_CONSECUTIVE_FAILURES", 20)),
 			CBTimeout:             getEnvDuration("CACHE_CB_TIMEOUT", 30*time.Second),
 		},
 		App: AppConfig{
