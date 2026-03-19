@@ -49,7 +49,14 @@ type CacheConfig struct {
 	ReadTimeout      time.Duration // per-operation read deadline; 0 = go-redis default (3 s)
 	WriteTimeout     time.Duration // per-operation write deadline; 0 = go-redis default (3 s)
 	OperationTimeout time.Duration // context deadline for each cache call
+	PoolSize         int           // go-redis connection pool size per node (CACHE_POOL_SIZE)
 	Nodes            []string
+
+	// Circuit breaker tuning (see repository.CBSettings for semantics)
+	CBMinRequests        uint32        // CACHE_CB_MIN_REQUESTS
+	CBFailureRate        float64       // CACHE_CB_FAILURE_RATE
+	CBConsecutiveFailures uint32       // CACHE_CB_CONSECUTIVE_FAILURES
+	CBTimeout            time.Duration // CACHE_CB_TIMEOUT — CB recovery window
 }
 
 // AppConfig holds application-specific configuration
@@ -103,10 +110,15 @@ func Load() *Config {
 			ReadTimeout:      getEnvDuration("CACHE_READ_TIMEOUT", 500*time.Millisecond),
 			WriteTimeout:     getEnvDuration("CACHE_WRITE_TIMEOUT", 500*time.Millisecond),
 			OperationTimeout: getEnvDuration("CACHE_OPERATION_TIMEOUT", 50*time.Millisecond),
+			PoolSize:         getEnvInt("CACHE_POOL_SIZE", 50),
 			Nodes: getCacheNodes(
 				getEnv("CACHE_HOST", "localhost"),
 				getEnv("CACHE_PORT", "6379"),
 			),
+			CBMinRequests:         uint32(getEnvInt("CACHE_CB_MIN_REQUESTS", 50)),
+			CBFailureRate:         getEnvFloat64("CACHE_CB_FAILURE_RATE", 0.2),
+			CBConsecutiveFailures: uint32(getEnvInt("CACHE_CB_CONSECUTIVE_FAILURES", 5)),
+			CBTimeout:             getEnvDuration("CACHE_CB_TIMEOUT", 30*time.Second),
 		},
 		App: AppConfig{
 			BaseURL:          getEnv("BASE_URL", "http://localhost:8080"),
@@ -152,6 +164,15 @@ func getEnvInt(key string, defaultVal int) int {
 	if val := os.Getenv(key); val != "" {
 		if i, err := strconv.Atoi(val); err == nil {
 			return i
+		}
+	}
+	return defaultVal
+}
+
+func getEnvFloat64(key string, defaultVal float64) float64 {
+	if val := os.Getenv(key); val != "" {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
 		}
 	}
 	return defaultVal

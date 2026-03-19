@@ -51,21 +51,27 @@ var notFoundSentinel = []byte("__NOT_FOUND__")
 
 // CBSettings holds circuit breaker configuration for any external dependency.
 type CBSettings struct {
-	MaxRequests         uint32
-	Interval            time.Duration
-	Timeout             time.Duration
-	ConsecutiveFailures uint32
-	OperationTimeout    time.Duration
+	MaxRequests          uint32
+	Interval             time.Duration
+	Timeout              time.Duration
+	ConsecutiveFailures  uint32  // secondary: trip immediately on N consecutive failures (0 = disabled)
+	FailureRateThreshold float64 // primary: trip when failure rate exceeds this fraction (0 = disabled)
+	MinRequestsToTrip    uint32  // minimum sample size before rate check applies (0 = skip rate check)
+	OperationTimeout     time.Duration
 }
 
 // DefaultCBSettings returns production circuit breaker defaults.
+// Primary trip condition: >20% failure rate over a 50-request window.
+// Secondary trip condition: 5 consecutive failures (fast path for total outages).
 func DefaultCBSettings() CBSettings {
 	return CBSettings{
-		MaxRequests:         3,
-		Interval:            10 * time.Second,
-		Timeout:             30 * time.Second,
-		ConsecutiveFailures: 5,
-		OperationTimeout:    50 * time.Millisecond,
+		MaxRequests:          3,
+		Interval:             10 * time.Second,
+		Timeout:              30 * time.Second,
+		ConsecutiveFailures:  5,
+		FailureRateThreshold: 0.2,
+		MinRequestsToTrip:    50,
+		OperationTimeout:     50 * time.Millisecond,
 	}
 }
 
@@ -112,17 +118,32 @@ func NewCachedURLRepository(db URLRepositoryInterface, cache cache.ClientProvide
 		Interval:    cb.Interval,
 		Timeout:     cb.Timeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			shouldTrip := counts.ConsecutiveFailures >= cb.ConsecutiveFailures
-			if shouldTrip {
+			// Primary: rate-based check over a meaningful sample window.
+			// Prevents spurious trips from momentary goroutine scheduling pressure.
+			if cb.MinRequestsToTrip > 0 && cb.FailureRateThreshold > 0 &&
+				counts.Requests >= cb.MinRequestsToTrip {
+				failureRate := float64(counts.TotalFailures) / float64(counts.Requests)
+				if failureRate > cb.FailureRateThreshold {
+					repo.logger.Error("circuit breaker about to trip",
+						slog.String("name", "redis"),
+						slog.String("reason", "failure_rate"),
+						slog.Float64("failure_rate", failureRate),
+						slog.Uint64("requests", uint64(counts.Requests)),
+						slog.Uint64("failures", uint64(counts.TotalFailures)))
+					return true
+				}
+			}
+			// Secondary: consecutive failures — fast path for total outages where
+			// the sample window hasn't filled yet.
+			if cb.ConsecutiveFailures > 0 && counts.ConsecutiveFailures >= cb.ConsecutiveFailures {
 				repo.logger.Error("circuit breaker about to trip",
 					slog.String("name", "redis"),
-					slog.Uint64("requests", uint64(counts.Requests)),
-					slog.Uint64("total_successes", uint64(counts.TotalSuccesses)),
-					slog.Uint64("total_failures", uint64(counts.TotalFailures)),
-					slog.Uint64("consecutive_successes", uint64(counts.ConsecutiveSuccesses)),
-					slog.Uint64("consecutive_failures", uint64(counts.ConsecutiveFailures)))
+					slog.String("reason", "consecutive_failures"),
+					slog.Uint64("consecutive_failures", uint64(counts.ConsecutiveFailures)),
+					slog.Uint64("requests", uint64(counts.Requests)))
+				return true
 			}
-			return shouldTrip
+			return false
 		},
 		IsSuccessful: func(err error) bool {
 			// redis.Nil is a cache miss, not an infrastructure failure.

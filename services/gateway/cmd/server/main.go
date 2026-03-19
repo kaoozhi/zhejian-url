@@ -48,7 +48,7 @@ func main() {
 
 	// Connect to cache — always build a HashRing; single node is a ring of one.
 	// cfg.Cache.Nodes is always populated (defaults to CACHE_HOST:CACHE_PORT when CACHE_NODES is unset).
-	clients, err := infra.NewCacheRings(ctx, cfg.Cache.Nodes, cfg.Cache.ReadTimeout, cfg.Cache.WriteTimeout)
+	clients, err := infra.NewCacheRings(ctx, cfg.Cache.Nodes, cfg.Cache.ReadTimeout, cfg.Cache.WriteTimeout, cfg.Cache.PoolSize)
 	if err != nil {
 		log.Fatalf("Failed to connect to cache: %v", err)
 	}

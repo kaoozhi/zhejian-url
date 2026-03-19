@@ -35,9 +35,9 @@ func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, err
 }
 
 // NewCacheClient creates a Redis client from a connection string.
-// readTimeout and writeTimeout override the go-redis defaults (3 s each);
-// pass 0 to keep the defaults.
-func NewCacheClient(ctx context.Context, connString string, readTimeout, writeTimeout time.Duration) (*redis.Client, error) {
+// readTimeout and writeTimeout override the go-redis defaults (3 s each); pass 0 to keep the defaults.
+// poolSize sets the connection pool size per node; pass 0 to use the go-redis default (10 * GOMAXPROCS).
+func NewCacheClient(ctx context.Context, connString string, readTimeout, writeTimeout time.Duration, poolSize int) (*redis.Client, error) {
 	opt, err := redis.ParseURL(connString)
 	if err != nil {
 		return nil, err
@@ -48,6 +48,9 @@ func NewCacheClient(ctx context.Context, connString string, readTimeout, writeTi
 	}
 	if writeTimeout > 0 {
 		opt.WriteTimeout = writeTimeout
+	}
+	if poolSize > 0 {
+		opt.PoolSize = poolSize
 	}
 
 	rdb := redis.NewClient(opt)
@@ -61,11 +64,11 @@ func NewCacheClient(ctx context.Context, connString string, readTimeout, writeTi
 
 // NewCacheRings creates a Redis client for each node in cacheNodes (host:port format).
 // On partial failure, already-opened clients are closed before returning the error.
-func NewCacheRings(ctx context.Context, cacheNodes []string, readTimeout, writeTimeout time.Duration) (map[string]*redis.Client, error) {
+func NewCacheRings(ctx context.Context, cacheNodes []string, readTimeout, writeTimeout time.Duration, poolSize int) (map[string]*redis.Client, error) {
 	clients := make(map[string]*redis.Client)
 	for _, node := range cacheNodes {
 		connString := nodeConnectionString(node)
-		client, err := NewCacheClient(ctx, connString, readTimeout, writeTimeout)
+		client, err := NewCacheClient(ctx, connString, readTimeout, writeTimeout, poolSize)
 		if err != nil {
 			for _, c := range clients {
 				c.Close()

@@ -39,6 +39,10 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider,
 	baseRepo := repository.NewURLRepository(db)
 	cacheCB := repository.DefaultCBSettings()
 	cacheCB.OperationTimeout = cfg.Cache.OperationTimeout
+	cacheCB.MinRequestsToTrip = cfg.Cache.CBMinRequests
+	cacheCB.FailureRateThreshold = cfg.Cache.CBFailureRate
+	cacheCB.ConsecutiveFailures = cfg.Cache.CBConsecutiveFailures
+	cacheCB.Timeout = cfg.Cache.CBTimeout
 	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL, obs.Logger,
 		repository.CachedURLRepositoryOptions{CacheCB: &cacheCB})
 	urlService := service.NewURLService(urlRepo, obs.Logger, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
