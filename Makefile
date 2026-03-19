@@ -123,6 +123,40 @@ load-throughput:
 	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-report.html \
 	k6 run tests/throughput.js
 
+## Phase 10B: single-node baseline — restart gateway with one Redis node first:
+##   CACHE_NODES=redis-1:6379 docker compose up -d gateway
+load-throughput-single:
+	RATE_LIMITER_ADDR="" CACHE_NODES=redis-1:6379 docker compose up -d gateway
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	mkdir -p results
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single.html \
+	script -q -c "k6 run tests/throughput.js" results/throughput-single.log
+
+## Phase 10B: 3-node ring measurement — restart gateway with full ring first:
+##   docker compose up -d gateway
+load-throughput-ring:
+	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	mkdir -p results
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring.html \
+	script -q -c "k6 run tests/throughput.js" results/throughput-ring.log
+
+## Phase 11: hot-key stress, single CB (before) — 20 URLs, CB should trip
+load-hotkey-single-cb:
+	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	mkdir -p results
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-single-cb.html \
+	script -q -c "k6 run tests/hotkey.js" results/hotkey-single-cb.log
+
+## Phase 11: hot-key stress, per-node CB (after) — same 20-URL load, only hot node trips
+load-hotkey-per-node-cb:
+	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	mkdir -p results
+	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-per-node-cb.html \
+	script -q -c "k6 run tests/hotkey.js" results/hotkey-per-node-cb.log
+
 ## Run analytics load simulation (Zipf distribution, 50 VUs)
 load-analytics:
 	k6 run tests/analytics-load.js
