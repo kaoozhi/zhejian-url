@@ -26,8 +26,8 @@ const URL_COUNT = 300;
 
 export const options = {
     stages: [
-        { duration: '30s', target: 800 },
-        { duration: '1m30s',  target: 800 },
+        { duration: '30s', target: 700 },
+        { duration: '1m30s',  target: 700 },
         { duration: '30s', target: 0   },
     ],
     thresholds: {

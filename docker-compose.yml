@@ -40,6 +40,8 @@ services:
   redis-2:
     image: redis:8-alpine
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6380:6379"
     volumes:
       - redis_2_data:/data
     healthcheck:
@@ -51,6 +53,8 @@ services:
   redis-3:
     image: redis:8-alpine
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6381:6379"
     volumes:
       - redis_3_data:/data
     healthcheck:
@@ -90,7 +94,7 @@ services:
       RATE_LIMITER_ADDR: ${RATE_LIMITER_ADDR-rate-limiter:50051}
       RATE_LIMITER_TIMEOUT: ${RATE_LIMITER_TIMEOUT:-100ms}
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
-      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      AMQP_URL: ${AMQP_URL-amqp://guest:guest@rabbitmq:5672/}
     ports:
       - "8080:8080"
     depends_on:

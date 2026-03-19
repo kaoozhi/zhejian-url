@@ -126,11 +126,46 @@ load-throughput:
 ## Phase 10B: single-node baseline — restart gateway with one Redis node first:
 ##   CACHE_NODES=redis-1:6379 docker compose up -d gateway
 load-throughput-single:
-	RATE_LIMITER_ADDR="" CACHE_NODES=redis-1:6379 docker compose up -d gateway
+	RATE_LIMITER_ADDR="" AMQP_URL="" CACHE_NODES=redis-1:6379 docker compose up -d gateway
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
-	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single.html \
-	script -q -c "k6 run tests/throughput.js" results/throughput-single.log
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single.html \
+		script -q -c "k6 run tests/throughput.js" results/throughput-single.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single.html \
+		script -q results/throughput-single.log k6 run tests/throughput.js; \
+	fi
+
+## Phase 10B: host gateway + single Redis node (docker infra only)
+## Starts postgres/migrations/redis-1 in Docker, runs gateway on host, then runs k6.
+load-throughput-single-host:
+	docker compose up -d postgres migrations redis-1
+	docker compose stop gateway || true
+	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
+	if [ -n "$$existing_pid" ]; then \
+		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
+		kill $$existing_pid || true; \
+		sleep 1; \
+	fi
+	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway.log)"
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379 RATE_LIMITER_ADDR='' AMQP_URL='' \
+		go run cmd/server/main.go > host-gateway.log 2>&1 & \
+		echo $$! > host-gateway.pid
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	mkdir -p results
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single-host.html \
+		script -q -c "k6 run tests/throughput.js" results/throughput-single-host.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single-host.html \
+		script -q results/throughput-single-host.log k6 run tests/throughput.js; \
+	fi
+	@echo "Host gateway running with PID $$(cat services/gateway/host-gateway.pid)."
+	@echo "Stop with: kill $$(cat services/gateway/host-gateway.pid)"
 
 ## Phase 10B: 3-node ring measurement — restart gateway with full ring first:
 ##   docker compose up -d gateway
@@ -138,24 +173,71 @@ load-throughput-ring:
 	RATE_LIMITER_ADDR="" docker compose up -d gateway
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
-	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring.html \
-	script -q -c "k6 run tests/throughput.js" results/throughput-ring.log
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring.html \
+		script -q -c "k6 run tests/throughput.js" results/throughput-ring.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring.html \
+		script -q results/throughput-ring.log k6 run tests/throughput.js; \
+	fi
+
+## Phase 10B: host gateway + 3-node Redis ring (docker infra only)
+## Uses host-mapped Redis ports: 6379 (redis-1), 6380 (redis-2), 6381 (redis-3).
+load-throughput-ring-host:
+	docker compose up -d postgres migrations redis-1 redis-2 redis-3
+	docker compose stop gateway || true
+	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
+	if [ -n "$$existing_pid" ]; then \
+		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
+		kill $$existing_pid || true; \
+		sleep 1; \
+	fi
+	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway.log)"
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' AMQP_URL='' \
+		go run cmd/server/main.go > host-gateway.log 2>&1 & \
+		echo $$! > host-gateway.pid
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	mkdir -p results
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring-host.html \
+		script -q -c "k6 run tests/throughput.js" results/throughput-ring-host.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring-host.html \
+		script -q results/throughput-ring-host.log k6 run tests/throughput.js; \
+	fi
+	@echo "Host gateway running with PID $$(cat services/gateway/host-gateway.pid)."
+	@echo "Stop with: kill $$(cat services/gateway/host-gateway.pid)"
 
 ## Phase 11: hot-key stress, single CB (before) — 20 URLs, CB should trip
 load-hotkey-single-cb:
 	RATE_LIMITER_ADDR="" docker compose up -d gateway
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
-	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-single-cb.html \
-	script -q -c "k6 run tests/hotkey.js" results/hotkey-single-cb.log
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-single-cb.html \
+		script -q -c "k6 run tests/hotkey.js" results/hotkey-single-cb.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-single-cb.html \
+		script -q results/hotkey-single-cb.log k6 run tests/hotkey.js; \
+	fi
 
 ## Phase 11: hot-key stress, per-node CB (after) — same 20-URL load, only hot node trips
 load-hotkey-per-node-cb:
 	RATE_LIMITER_ADDR="" docker compose up -d gateway
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
-	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-per-node-cb.html \
-	script -q -c "k6 run tests/hotkey.js" results/hotkey-per-node-cb.log
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-per-node-cb.html \
+		script -q -c "k6 run tests/hotkey.js" results/hotkey-per-node-cb.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/hotkey-per-node-cb.html \
+		script -q results/hotkey-per-node-cb.log k6 run tests/hotkey.js; \
+	fi
 
 ## Run analytics load simulation (Zipf distribution, 50 VUs)
 load-analytics:
@@ -236,6 +318,8 @@ help:
 	@echo "  make load-spike      Spike (50→300→50 VUs)"
 	@echo "  make load-endurance  Endurance (100 VUs, 12 min, local only)"
 	@echo "  make load-throughput Throughput ceiling (rate limiter disabled)"
+	@echo "  make load-throughput-single-host Host gateway + single Redis throughput"
+	@echo "  make load-throughput-ring-host Host gateway + 3-node ring throughput"
 	@echo "  make load-analytics  Analytics simulation (Zipf, 50 VUs)"
 	@echo ""
 	@echo "Chaos Testing:"
