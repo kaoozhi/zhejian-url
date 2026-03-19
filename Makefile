@@ -151,8 +151,8 @@ load-throughput-single-host:
 	fi
 	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway.log)"
 	@cd services/gateway && \
-		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379 RATE_LIMITER_ADDR='' AMQP_URL='' \
-		go run cmd/server/main.go > host-gateway.log 2>&1 & \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379 RATE_LIMITER_ADDR='' AMQP_URL='' CACHE_OPERATION_TIMEOUT=150ms \
+		go run cmd/server/main.go > host-gateway-single.log 2>&1 & \
 		echo $$! > host-gateway.pid
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
@@ -195,8 +195,8 @@ load-throughput-ring-host:
 	fi
 	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway.log)"
 	@cd services/gateway && \
-		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' AMQP_URL='' \
-		go run cmd/server/main.go > host-gateway.log 2>&1 & \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' AMQP_URL='' CACHE_OPERATION_TIMEOUT=150ms \
+		go run cmd/server/main.go > host-gateway-ring.log 2>&1 & \
 		echo $$! > host-gateway.pid
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
