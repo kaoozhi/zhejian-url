@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
-	"github.com/redis/go-redis/v9"
-	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 	"github.com/zhejian/url-shortener/gateway/internal/testutil"
 )

@@ -53,10 +53,10 @@ type CacheConfig struct {
 	Nodes            []string
 
 	// Circuit breaker tuning (see repository.CBSettings for semantics)
-	CBMinRequests        uint32        // CACHE_CB_MIN_REQUESTS
-	CBFailureRate        float64       // CACHE_CB_FAILURE_RATE
-	CBConsecutiveFailures uint32       // CACHE_CB_CONSECUTIVE_FAILURES
-	CBTimeout            time.Duration // CACHE_CB_TIMEOUT — CB recovery window
+	CBMinRequests         uint32        // CACHE_CB_MIN_REQUESTS
+	CBFailureRate         float64       // CACHE_CB_FAILURE_RATE
+	CBConsecutiveFailures uint32        // CACHE_CB_CONSECUTIVE_FAILURES
+	CBTimeout             time.Duration // CACHE_CB_TIMEOUT — CB recovery window
 }
 
 // AppConfig holds application-specific configuration
