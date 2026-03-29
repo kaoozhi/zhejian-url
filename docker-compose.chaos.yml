@@ -5,18 +5,25 @@
 #
 # Proxies:
 #   rate-limiter  toxiproxy:50052  →  rate-limiter:50051
-#   redis         toxiproxy:6380   →  redis:6379
+#   redis-1       toxiproxy:6382   →  redis-1:6379
+#   redis-2       toxiproxy:6383   →  redis-2:6379
+#   redis-3       toxiproxy:6384   →  redis-3:6379
 #   postgres      toxiproxy:5433   →  postgres:5432
 #
 # Chaos commands (examples):
-#   # Redis: inject 200ms latency
-#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t latency -a latency=200 redis
+#   # All Redis nodes: inject 200ms latency
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t latency -a latency=200 redis-1
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t latency -a latency=200 redis-2
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t latency -a latency=200 redis-3
+#
+#   # Single Redis node down (simulates node failure, CB should open for that node only)
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t timeout -a timeout=0 redis-1
 #
 #   # Postgres: drop all connections
 #   docker exec zhejian-toxiproxy /toxiproxy-cli toxic add -t timeout -a timeout=0 postgres
 #
 #   # Remove toxic (auto-name: latency_downstream / timeout_downstream)
-#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic delete -n latency_downstream redis
+#   docker exec zhejian-toxiproxy /toxiproxy-cli toxic delete -n latency_downstream redis-1
 
 services:
   # Toxiproxy - transparent TCP proxy for chaos injection
@@ -26,7 +33,9 @@ services:
     ports:
       - "8474:8474"   # REST API
       - "50052:50052" # rate-limiter proxy
-      - "6380:6380"   # redis proxy
+      - "6382:6382"   # redis-1 proxy
+      - "6383:6383"   # redis-2 proxy
+      - "6384:6384"   # redis-3 proxy
       - "5433:5433"   # postgres proxy
 
   # One-shot init: registers all proxy rules on startup
@@ -44,23 +53,31 @@ services:
           -d '{"name":"rate-limiter","listen":"0.0.0.0:50052","upstream":"rate-limiter:50051"}'
         curl -sf -X POST http://toxiproxy:8474/proxies \
           -H 'Content-Type: application/json' \
-          -d '{"name":"redis","listen":"0.0.0.0:6380","upstream":"redis:6379"}'
+          -d '{"name":"redis-1","listen":"0.0.0.0:6382","upstream":"redis-1:6379"}'
+        curl -sf -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"redis-2","listen":"0.0.0.0:6383","upstream":"redis-2:6379"}'
+        curl -sf -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"redis-3","listen":"0.0.0.0:6384","upstream":"redis-3:6379"}'
         curl -sf -X POST http://toxiproxy:8474/proxies \
           -H 'Content-Type: application/json' \
           -d '{"name":"postgres","listen":"0.0.0.0:5433","upstream":"postgres:5432"}'
-        echo 'Toxiproxy configured: rate-limiter, redis, postgres'
+        echo 'Toxiproxy configured: rate-limiter, redis-1, redis-2, redis-3, postgres'
     depends_on:
       - toxiproxy
     restart: "no"
 
-  # Override gateway: route all dependencies through toxiproxy
+  # Override gateway: route all dependencies through toxiproxy.
+  # AMQP_URL and RATE_LIMITER_ADDR are hardcoded here so local .env overrides
+  # (e.g. localhost URLs set for host-gateway load tests) don't leak in.
   gateway:
     environment:
       - RATE_LIMITER_ADDR=toxiproxy:50052
-      - CACHE_HOST=toxiproxy
-      - CACHE_PORT=6380
-      # Tighten Redis timeouts so latency injection in Scenario 2 (200 ms)
-      # reliably exceeds the client deadline and triggers the circuit breaker.
+      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
+      - CACHE_NODES=toxiproxy:6382,toxiproxy:6383,toxiproxy:6384
+      # Tighten Redis timeouts so latency injection (200ms) reliably exceeds
+      # the client deadline and triggers the circuit breaker.
       - CACHE_READ_TIMEOUT=100ms
       - CACHE_WRITE_TIMEOUT=100ms
       - DB_HOST=toxiproxy

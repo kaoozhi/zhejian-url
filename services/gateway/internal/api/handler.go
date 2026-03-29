@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhejian/url-shortener/gateway/internal/analytics"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 	"github.com/zhejian/url-shortener/gateway/internal/service"
 )
@@ -24,7 +25,7 @@ type CBStateProvider interface {
 type Handler struct {
 	urlService     service.URLServiceInterface // URL shortening business logic
 	db             DBInterface                 // Database connection for health checks
-	cache          CacheInterface              // Cache conneciton for health checks
+	cache          cache.ClientProvider        // Cache conneciton for health checks
 	logger         *slog.Logger                // Structured logger for validation/error logging
 	publisher      *analytics.Publisher        // Analytics click event publisher (nil when disabled)
 	cacheCBState   CBStateProvider
@@ -39,16 +40,9 @@ type DBInterface interface {
 	Close()                         // Close database connection
 }
 
-// CacheInterface defines the cache operations needed by the handler.
-// This interface allows for easy mocking in unit tests without
-// requiring a real cache connection.
-type CacheInterface interface {
-	Ping(ctx context.Context) error
-}
-
 // NewHandler creates a new handler instance with the provided dependencies.
 // It accepts interfaces to enable dependency injection and facilitate testing.
-func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache CacheInterface, logger *slog.Logger, publisher *analytics.Publisher) *Handler {
+func NewHandler(urlService service.URLServiceInterface, db DBInterface, cache cache.ClientProvider, logger *slog.Logger, publisher *analytics.Publisher) *Handler {
 	return &Handler{
 		urlService: urlService,
 		db:         db,

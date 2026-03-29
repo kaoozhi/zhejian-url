@@ -38,7 +38,7 @@ func SetupTestCache(ctx context.Context) (*TestCache, error) {
 		return nil, err
 	}
 
-	client, err := infra.NewCacheClient(ctx, connString, 0, 0)
+	client, err := infra.NewCacheClient(ctx, connString, 0, 0, 0)
 	if err != nil {
 		if terr := container.Terminate(ctx); terr != nil {
 			err = terr

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zhejian/url-shortener/gateway/internal/analytics"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
@@ -45,13 +46,14 @@ func main() {
 	}
 	defer db.Close()
 
-	// Connect to cache
-	cacheConnString := cfg.Cache.ConnectionString()
-	cache, err := infra.NewCacheClient(ctx, cacheConnString, cfg.Cache.ReadTimeout, cfg.Cache.WriteTimeout)
+	// Connect to cache — always build a HashRing; single node is a ring of one.
+	// cfg.Cache.Nodes is always populated (defaults to CACHE_HOST:CACHE_PORT when CACHE_NODES is unset).
+	clients, err := infra.NewCacheRings(ctx, cfg.Cache.Nodes, cfg.Cache.ReadTimeout, cfg.Cache.WriteTimeout, cfg.Cache.PoolSize)
 	if err != nil {
 		log.Fatalf("Failed to connect to cache: %v", err)
 	}
-	defer cache.Close()
+	cacheProvider := cache.NewHashRing(clients, 150)
+	defer cacheProvider.Close()
 
 	// Verify database connectivity
 	if err := db.Ping(ctx); err != nil {
@@ -60,7 +62,7 @@ func main() {
 	obs.Logger.Info("Database connected successfully")
 
 	// Verify cache connectivity
-	if err := cache.Ping(ctx).Err(); err != nil {
+	if err := cacheProvider.Ping(ctx); err != nil {
 		log.Fatalf("Failed to ping cache: %v", err)
 	}
 	obs.Logger.Info("Cache connected successfully")
@@ -87,7 +89,7 @@ func main() {
 		obs.Logger.Info("Analytics publisher enabled")
 	}
 
-	srv := server.NewServer(cfg, db, cache, rateLimiter, obs, pub)
+	srv := server.NewServer(cfg, db, cacheProvider, rateLimiter, obs, pub)
 
 	// Start server in a goroutine
 	go func() {

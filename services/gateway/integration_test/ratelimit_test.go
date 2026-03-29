@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/ratelimit"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 	"google.golang.org/grpc"
@@ -71,7 +73,7 @@ func setupTestServerWithRL(t *testing.T, rlAddr string) (*http.Server, string) {
 	t.Cleanup(func() { rlClient.Close() })
 
 	gin.SetMode(gin.TestMode)
-	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, rlClient, testObs, nil)
+	srv := server.NewServer(testCfg, testDB.Pool, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), rlClient, testObs, nil)
 
 	lis, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)

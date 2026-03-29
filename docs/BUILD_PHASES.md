@@ -648,24 +648,43 @@ Implement four targeted scaling patterns, each with a measurable before/after co
 
 **Hypothesis:** `GetByCode` (reads) and `Create` (writes) compete for the same 10-connection pool. Routing reads to a streaming replica doubles effective connection capacity.
 
-**Implicit toggle:** `DB_REPLICA_URL` unset → `readPool()` fallback to writeDB. Set → replica active.
+**Result: Null result — hypothesis was wrong for this architecture.**
 
-**Files touched:**
-- `docker-compose.yml` — add `postgres-replica` (Bitnami streaming replication)
-- `services/gateway/internal/config/config.go` — add `DB_REPLICA_URL` field
-- `services/gateway/internal/repository/url_repository.go` — `writeDB` / `readDB` pools, `readPool()` fallback
-- `services/gateway/internal/server/server.go` — pass `readDB` to `NewURLRepository`
-- `services/gateway/cmd/server/main.go` — create replica pool from config
+| Metric | Before | After | Delta |
+|---|---|---|---|
+| p95 | 212ms | 261ms | +49ms (worse) |
+| req/s | 5384 | 4481 | -17% |
+| failures | 0% | 0% | — |
 
-**New metric:** `db_query_total{pool="read|write"}` (OTel counter)
+**Why it didn't work:**
+1. **Redis absorbs most reads.** At ~5600 req/s with a warm cache, only cache-miss reads reach the DB. The 10-connection pool was never congested — splitting it had nothing to split.
+2. **Two PG containers consume more WSL2 resources.** Running primary + replica on the same machine reduces CPU/memory per container. The overhead outweighs any pool-split benefit.
+3. **The real bottleneck is Redis saturation, not DB pool contention.** When the Redis CB opens under load, reads fall through to DB — but the constraint is the Redis circuit breaker state, not which pool handles the fallback.
 
-**Expected delta:** p95 at 700 VUs: 185ms → <150ms (reads no longer contend with writes for the same pool)
+**Engineering lesson:** Read-write split is designed for I/O-bound workloads where the DB is the bottleneck. When a cache sits in front of the DB with a high hit rate, the DB pool is underutilised and splitting it adds infrastructure cost with no throughput benefit. Implementation was reverted; the pattern remains valid in write-heavy or cache-cold workloads.
+
+**Implicit toggle (implemented, then reverted):** `DB_REPLICA_URL` unset → single pool. Set → replica active via `readPool()` fallback.
 
 ---
 
 #### Phase 10B: Redis Consistent Hash Ring
 
-**Hypothesis:** Single Redis node is a throughput ceiling. Three nodes with consistent hashing distribute cache load ~33% per node.
+**Confirmed bottleneck (from Phase 10A load test logs):**
+
+```
+circuit breaker about to trip  (5 consecutive failures)
+circuit breaker OPENED         (closed → open)
+cache read error: context deadline exceeded   ← Redis 50ms timeout hit
+  ... 30s failing fast, all reads fall through to DB ...
+circuit breaker testing recovery (open → half-open)
+cache read error: too many requests           ← MaxRequests=3 quota exhausted
+circuit breaker RECOVERED      (half-open → closed)
+cache read error: too many requests           ← already failing again immediately
+```
+
+Single Redis node saturates at ~5600 req/s (~11,000 ops/s with GET+SET per redirect). The CB oscillates — opens, recovers, immediately re-trips — because the per-node ops rate never drops below the saturation threshold.
+
+**Hypothesis:** Three nodes with consistent hashing distribute cache load ~33% per node (~3700 ops/s each), pushing the saturation threshold 3× higher and eliminating CB trips at 700 VUs.
 
 **Implicit toggle:** `CACHE_NODES` unset → `singleNodeRouter`. Set to 3 addresses → `HashRing`.
 
@@ -714,9 +733,9 @@ Implement four targeted scaling patterns, each with a measurable before/after co
 
 ### Comparison Summary
 
-| Sub-phase | Primary bottleneck | Before (700 VUs baseline) | Expected after |
+| Sub-phase | Primary bottleneck | Before (700 VUs baseline) | Actual after |
 |---|---|---|---|
-| 10A PG read-write split | Read/write contention on single pool | p95=185ms | p95 <150ms |
+| 10A PG read-write split | Read/write contention on single pool | p95=212ms | p95=261ms — **null result**, DB pool not the bottleneck |
 | 10B Redis hash ring | Single Redis connection throughput ceiling | ~5600 req/s plateau | higher plateau or lower p95 |
 | 10C Competing consumers | Single worker, queue grows unboundedly | Queue depth growing | Queue depth stable |
 | 10D PgBouncer | Connections = instances × pool size | N × 10 PG connections | 15 constant |

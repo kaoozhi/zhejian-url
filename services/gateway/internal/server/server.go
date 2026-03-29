@@ -1,16 +1,15 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"github.com/zhejian/url-shortener/gateway/internal/analytics"
 	"github.com/zhejian/url-shortener/gateway/internal/api"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/middleware"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
@@ -20,16 +19,9 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
-// redisPinger adapts *redis.Client to api.CacheInterface.
-type redisPinger struct{ client *redis.Client }
-
-func (r *redisPinger) Ping(ctx context.Context) error {
-	return r.client.Ping(ctx).Err()
-}
-
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // Middleware is registered before routes so it applies to all requests.
-func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *gin.Engine {
+func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *gin.Engine {
 	r := gin.Default()
 
 	// Metrics endpoint
@@ -47,6 +39,10 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLi
 	baseRepo := repository.NewURLRepository(db)
 	cacheCB := repository.DefaultCBSettings()
 	cacheCB.OperationTimeout = cfg.Cache.OperationTimeout
+	cacheCB.MinRequestsToTrip = cfg.Cache.CBMinRequests
+	cacheCB.FailureRateThreshold = cfg.Cache.CBFailureRate
+	cacheCB.ConsecutiveFailures = cfg.Cache.CBConsecutiveFailures
+	cacheCB.Timeout = cfg.Cache.CBTimeout
 	urlRepo := repository.NewCachedURLRepository(baseRepo, cache, cfg.Cache.TTL, obs.Logger,
 		repository.CachedURLRepositoryOptions{CacheCB: &cacheCB})
 	urlService := service.NewURLService(urlRepo, obs.Logger, cfg.App.BaseURL, cfg.App.ShortCodeLen, cfg.App.ShortCodeRetries)
@@ -54,7 +50,7 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLi
 	if rateLimiter != nil {
 		rlCB = rateLimiter
 	}
-	handler := api.NewHandler(urlService, db, &redisPinger{client: cache}, obs.Logger, pub).WithCBProviders(urlRepo, rlCB)
+	handler := api.NewHandler(urlService, db, cache, obs.Logger, pub).WithCBProviders(urlRepo, rlCB)
 	handler.RegisterRoutes(r)
 
 	return r
@@ -62,7 +58,7 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLi
 
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
-func NewServer(cfg *config.Config, db *pgxpool.Pool, cache *redis.Client, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
+func NewServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
 	router := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
 
 	return &http.Server{

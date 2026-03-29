@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
@@ -68,7 +70,7 @@ func TestMain(m *testing.M) {
 
 func setupTestServer(t *testing.T) (*http.Server, string) {
 	gin.SetMode(gin.TestMode)
-	srv := server.NewServer(testCfg, testDB.Pool, testCache.Client, nil, testObs, nil)
+	srv := server.NewServer(testCfg, testDB.Pool, cache.NewHashRing(map[string]*redis.Client{"node": testCache.Client}, 1), nil, testObs, nil)
 
 	// Create listener on localhost
 	listener, err := net.Listen("tcp", "localhost:0")

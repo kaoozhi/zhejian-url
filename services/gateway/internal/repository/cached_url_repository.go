@@ -16,6 +16,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sony/gobreaker"
+	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/model"
 )
 
@@ -25,7 +26,7 @@ var tracer = otel.Tracer("gateway/repository")
 // It uses cache-aside for reads and write-through for writes.
 type CachedURLRepository struct {
 	db              URLRepositoryInterface
-	cache           *redis.Client
+	cache           cache.ClientProvider
 	ttl             time.Duration
 	requestGroup    *singleflight.Group
 	cacheCB         *gobreaker.CircuitBreaker
@@ -50,21 +51,27 @@ var notFoundSentinel = []byte("__NOT_FOUND__")
 
 // CBSettings holds circuit breaker configuration for any external dependency.
 type CBSettings struct {
-	MaxRequests         uint32
-	Interval            time.Duration
-	Timeout             time.Duration
-	ConsecutiveFailures uint32
-	OperationTimeout    time.Duration
+	MaxRequests          uint32
+	Interval             time.Duration
+	Timeout              time.Duration
+	ConsecutiveFailures  uint32  // secondary: trip immediately on N consecutive failures (0 = disabled)
+	FailureRateThreshold float64 // primary: trip when failure rate exceeds this fraction (0 = disabled)
+	MinRequestsToTrip    uint32  // minimum sample size before rate check applies (0 = skip rate check)
+	OperationTimeout     time.Duration
 }
 
 // DefaultCBSettings returns production circuit breaker defaults.
+// Primary trip condition: >20% failure rate over a 50-request window.
+// Secondary trip condition: 5 consecutive failures (fast path for total outages).
 func DefaultCBSettings() CBSettings {
 	return CBSettings{
-		MaxRequests:         3,
-		Interval:            10 * time.Second,
-		Timeout:             30 * time.Second,
-		ConsecutiveFailures: 5,
-		OperationTimeout:    50 * time.Millisecond,
+		MaxRequests:          3,
+		Interval:             10 * time.Second,
+		Timeout:              30 * time.Second,
+		ConsecutiveFailures:  20,
+		FailureRateThreshold: 0.2,
+		MinRequestsToTrip:    50,
+		OperationTimeout:     50 * time.Millisecond,
 	}
 }
 
@@ -74,7 +81,7 @@ type CachedURLRepositoryOptions struct {
 }
 
 // NewCachedURLRepository creates a new cached URL repository.
-func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl time.Duration, logger *slog.Logger, opts ...CachedURLRepositoryOptions) *CachedURLRepository {
+func NewCachedURLRepository(db URLRepositoryInterface, cache cache.ClientProvider, ttl time.Duration, logger *slog.Logger, opts ...CachedURLRepositoryOptions) *CachedURLRepository {
 	cb := DefaultCBSettings()
 	if len(opts) > 0 && opts[0].CacheCB != nil {
 		cb = *opts[0].CacheCB
@@ -111,17 +118,34 @@ func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl 
 		Interval:    cb.Interval,
 		Timeout:     cb.Timeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			shouldTrip := counts.ConsecutiveFailures >= cb.ConsecutiveFailures
-			if shouldTrip {
+			// Primary: rate-based check over a meaningful sample window.
+			// Prevents spurious trips from momentary goroutine scheduling pressure.
+			if cb.MinRequestsToTrip > 0 && cb.FailureRateThreshold > 0 &&
+				counts.Requests >= cb.MinRequestsToTrip {
+				failureRate := float64(counts.TotalFailures) / float64(counts.Requests)
+				if failureRate > cb.FailureRateThreshold {
+					repo.logger.Error("circuit breaker about to trip",
+						slog.String("name", "redis"),
+						slog.String("reason", "failure_rate"),
+						slog.Float64("failure_rate", failureRate),
+						slog.Uint64("requests", uint64(counts.Requests)),
+						slog.Uint64("failures", uint64(counts.TotalFailures)),
+						slog.Duration("operation_timeout", cb.OperationTimeout))
+					return true
+				}
+			}
+			// Secondary: consecutive failures — fast path for total outages where
+			// the sample window hasn't filled yet.
+			if cb.ConsecutiveFailures > 0 && counts.ConsecutiveFailures >= cb.ConsecutiveFailures {
 				repo.logger.Error("circuit breaker about to trip",
 					slog.String("name", "redis"),
+					slog.String("reason", "consecutive_failures"),
+					slog.Uint64("consecutive_failures", uint64(counts.ConsecutiveFailures)),
 					slog.Uint64("requests", uint64(counts.Requests)),
-					slog.Uint64("total_successes", uint64(counts.TotalSuccesses)),
-					slog.Uint64("total_failures", uint64(counts.TotalFailures)),
-					slog.Uint64("consecutive_successes", uint64(counts.ConsecutiveSuccesses)),
-					slog.Uint64("consecutive_failures", uint64(counts.ConsecutiveFailures)))
+					slog.Duration("operation_timeout", cb.OperationTimeout))
+				return true
 			}
-			return shouldTrip
+			return false
 		},
 		IsSuccessful: func(err error) bool {
 			// redis.Nil is a cache miss, not an infrastructure failure.
@@ -157,7 +181,7 @@ func NewCachedURLRepository(db URLRepositoryInterface, cache *redis.Client, ttl 
 		metric.WithDescription("Circuit breaker state (0=closed, 1=half-open, 2=open)"),
 		metric.WithFloat64Callback(func(_ context.Context, o metric.Float64Observer) error {
 			o.Observe(float64(repo.cacheCB.State()), metric.WithAttributes(
-				attribute.String("name", "redis"),
+				attribute.String("name", "cache"),
 			))
 			return nil
 		}),
@@ -174,19 +198,22 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 
 	// Try cache first
 	if r.cache != nil {
+		node := r.cache.NodeFor(cacheKey)
+		nodeAttr := metric.WithAttributes(attribute.String("cache.node", node))
 		// Start span for cache lookup
 		ctx, span := tracer.Start(ctx, "cache.get",
 			trace.WithAttributes(
 				attribute.String("db.system", "redis"),
 				attribute.String("db.operation", "GET"),
 				attribute.String("cache.key", cacheKey),
+				attribute.String("cache.node", node),
 			),
 		)
 		cached, err := r.cacheGet(ctx, cacheKey)
 		if err == nil {
 			if cached == string(notFoundSentinel) {
 				span.SetAttributes(attribute.Bool("cache.hit", true))
-				r.cacheHits.Add(ctx, 1)
+				r.cacheHits.Add(ctx, 1, nodeAttr)
 				span.SetAttributes(attribute.Bool("cache.negative", true))
 				span.End()
 				return nil, ErrNotFound
@@ -194,7 +221,7 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 			var cachedURL model.URL
 			if err := json.Unmarshal([]byte(cached), &cachedURL); err == nil {
 				span.SetAttributes(attribute.Bool("cache.hit", true))
-				r.cacheHits.Add(ctx, 1)
+				r.cacheHits.Add(ctx, 1, nodeAttr)
 				span.End()
 				return &cachedURL, nil
 			}
@@ -211,7 +238,7 @@ func (r *CachedURLRepository) GetByCode(ctx context.Context, code string) (*mode
 				slog.String("key", cacheKey))
 		}
 		span.SetAttributes(attribute.Bool("cache.hit", false))
-		r.cacheMisses.Add(ctx, 1)
+		r.cacheMisses.Add(ctx, 1, nodeAttr)
 		span.End()
 	}
 
@@ -252,6 +279,7 @@ func (r *CachedURLRepository) Create(ctx context.Context, url *model.URL) error 
 				attribute.String("db.system", "redis"),
 				attribute.String("db.operation", "SET"),
 				attribute.String("cache.key", cacheKey),
+				attribute.String("cache.node", r.cache.NodeFor(cacheKey)),
 			),
 		)
 		if data, err := json.Marshal(url); err == nil {
@@ -299,6 +327,7 @@ func (r *CachedURLRepository) Delete(ctx context.Context, code string) error {
 				attribute.String("db.system", "redis"),
 				attribute.String("db.operation", "DELETE"),
 				attribute.String("cache.key", cacheKey),
+				attribute.String("cache.node", r.cache.NodeFor(cacheKey)),
 			),
 		)
 		r.cacheDel(ctx, cacheKey)
@@ -386,8 +415,10 @@ func rewriteCache(ctx context.Context, r *CachedURLRepository, cacheKey string, 
 func (r *CachedURLRepository) cacheGet(ctx context.Context, key string) (string, error) {
 	cacheCtx, cancel := context.WithTimeout(ctx, r.cacheTimeout)
 	defer cancel()
+
 	res, err := r.cacheCB.Execute(func() (interface{}, error) {
-		return r.cache.Get(cacheCtx, key).Result()
+		client := r.cache.ClientFor(key)
+		return client.Get(cacheCtx, key).Result()
 	})
 	if err != nil {
 		return "", err
@@ -399,7 +430,8 @@ func (r *CachedURLRepository) cacheSet(ctx context.Context, key string, data int
 	cacheCtx, cancel := context.WithTimeout(ctx, r.cacheTimeout)
 	defer cancel()
 	_, err := r.cacheCB.Execute(func() (interface{}, error) {
-		return nil, r.cache.Set(cacheCtx, key, data, ttl).Err()
+		client := r.cache.ClientFor(key)
+		return nil, client.Set(cacheCtx, key, data, ttl).Err()
 	})
 	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
 		r.totalErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "cache_write")))
@@ -413,7 +445,8 @@ func (r *CachedURLRepository) cacheDel(ctx context.Context, key string) {
 	cacheCtx, cancel := context.WithTimeout(ctx, r.cacheTimeout)
 	defer cancel()
 	_, err := r.cacheCB.Execute(func() (interface{}, error) {
-		return nil, r.cache.Del(cacheCtx, key).Err()
+		client := r.cache.ClientFor(key)
+		return nil, client.Del(cacheCtx, key).Err()
 	})
 	if err != nil && !errors.Is(err, gobreaker.ErrOpenState) {
 		r.totalErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("type", "cache_delete")))
