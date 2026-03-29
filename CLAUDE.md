@@ -65,7 +65,7 @@ make load-baseline
 
 # Throughput ceiling — rate limiter MUST be disabled first
 RATE_LIMITER_ADDR="" docker compose up -d gateway
-make load-throughput          # 700 VUs, no sleep, baseline: p95=185ms ~5600 req/s
+make load-throughput          # 1000 VUs, no sleep, baseline: p95=193ms ~8100 req/s
 
 # Capture error details
 k6 run --out json=results/raw.json tests/throughput.js
@@ -128,4 +128,4 @@ Migrations path is resolved relative to `testutil/testdb.go` via `runtime.Caller
 ## Active Plans
 
 - **Phase 10 (NEXT):** `docs/plans/2026-03-06-scaling-comparison-plan.md` — PG read-write split (10A), Redis consistent hash ring (10B), RabbitMQ competing consumers + quorum queue (10C), PgBouncer (10D). Each pattern uses env vars as implicit toggles; no explicit feature flags.
-- Throughput baseline for comparisons: **700 VUs, p95=185ms, ~5600 req/s** (rate limiter disabled, WSL2).
+- Throughput baseline for comparisons: **1000 VUs, p95=193ms, ~8100 req/s** (rate limiter disabled, WSL2, 3-node ring).

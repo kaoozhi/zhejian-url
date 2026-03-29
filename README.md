@@ -6,106 +6,296 @@
 
 # Zhejian URL Shortener
 
-A production-grade URL shortener built to showcase high-concurrency backend engineering and distributed systems design.
+A production-grade URL shortener built incrementally across 10 engineering phases — from a bare CRUD API to a distributed system with a consistent hash ring, chaos-tested resilience patterns, and load-tested throughput benchmarks.
 
-## Architecture Overview
+**Key results:**
+- **8,100 req/s** redirect throughput at p95=193ms (WSL2, 1000 VUs, 0% errors, rate limiter disabled)
+- 3-node Redis ring eliminated CB oscillation seen with single-node saturation
+- 5 automated chaos scenarios (Redis latency, Redis down, Postgres degradation, rate-limiter faults, network partition)
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Load Balancer                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Go API Gateway                                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│  │   Router    │  │ Backpressure│  │   Circuit   │  │   Request   │        │
-│  │             │  │   Control   │  │   Breaker   │  │   Tracing   │        │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
-└─────────────────────────────────────────────────────────────────────────────┘
-         │                    │                    │
-         ▼                    ▼                    ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│  Rust Rate      │  │    Redis        │  │   PostgreSQL    │
-│  Limiter        │  │    Cache        │  │   (Primary)     │
-│  (gRPC/HTTP)    │  │                 │  │                 │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
-                              │                    │
-                              └────────┬───────────┘
-                                       ▼
-                     ┌─────────────────────────────────┐
-                     │          RabbitMQ               │
-                     │  ┌─────────┐  ┌─────────────┐   │
-                     │  │ Cache   │  │ Dead Letter │   │
-                     │  │ Updates │  │   Queue     │   │
-                     │  └─────────┘  └─────────────┘   │
-                     └─────────────────────────────────┘
-                                       │
-                     ┌─────────────────┴─────────────────┐
-                     ▼                                   ▼
-         ┌─────────────────┐                 ┌─────────────────┐
-         │   Prometheus    │                 │   OpenTelemetry │
-         │   + Grafana     │                 │   Collector     │
-         └─────────────────┘                 └─────────────────┘
+Client
+  │
+  ▼
+Gateway (Go/Gin, :8080)
+  ├── OTel middleware → Jaeger (:16686)
+  ├── Metrics middleware → Prometheus (:9090)
+  ├── Rate-limit middleware
+  │     └── gRPC (100ms timeout, fail-open) → Rust rate-limiter (:50051)
+  │                                                └── Redis token bucket
+  │
+  ├── GET /:code  ──► CachedURLRepository
+  │                       ├── Redis hash ring (3 nodes, SHA-256, 150 vnodes)
+  │                       │     circuit breaker + singleflight + negative cache
+  │                       └── PostgreSQL (pgxpool, fallback on CB open)
+  │
+  ├── POST /api/v1/shorten ──► URLRepository → PostgreSQL
+  │                                └── fire-and-forget Publish(ClickEvent)
+  │                                        └── RabbitMQ → analytics-worker
+  │                                                            └── batch flush → PostgreSQL
+  │
+  └── GET /health  (amqp_connected, cache_cb, rate_limiter_cb states)
 ```
+
+---
+
+## Technology Stack
+
+| Layer | Technology | Notes |
+|---|---|---|
+| API Gateway | Go 1.23, Gin | Middleware chain: tracing → logging → metrics → rate-limit |
+| Rate Limiter | Rust, tonic (gRPC), tokio | Token bucket via atomic Lua script; single Redis round-trip |
+| Cache | Redis 8 (3-node hash ring) | SHA-256 consistent hashing, 150 vnodes/node, circuit breaker |
+| Database | PostgreSQL 16, pgx/v5 pool | pgxpool MaxConns=10; read path ~99% served from cache |
+| Message broker | RabbitMQ 4, durable queue | Fire-and-forget publishes; worker batch-flushes 100 events or 5s |
+| Analytics Worker | Go 1.23 | Separate module; `restart: on-failure` + nack-free error recovery |
+| Observability | OpenTelemetry SDK, Jaeger, Prometheus | Trace IDs injected into slog fields; cache_node labels on metrics |
+| Chaos testing | Toxiproxy, bash scenarios | 5 fault scenarios; chaos overlay via `docker-compose.chaos.yml` |
+| Load testing | k6 | Baseline / spike / endurance / throughput tests; web dashboard |
+| CI/CD | GitHub Actions | Go lint+test, Rust clippy+test, prod build smoke test, chaos CI |
+
+---
+
+## Quick Start
+
+```bash
+# Clone and start the full dev stack
+git clone https://github.com/kaoozhi/zhejian-url
+cd zhejian-url
+docker compose up --build -d
+
+# Verify everything is up
+curl http://localhost:8080/health
+# {"status":"ok","amqp_connected":true,"cache_cb":"closed","rate_limiter_cb":"closed"}
+
+# Create a short URL
+curl -s -X POST http://localhost:8080/api/v1/shorten \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com"}' | jq .
+# {"short_url":"http://localhost:8080/AbCd3F","short_code":"AbCd3F"}
+
+# Follow the redirect
+curl -v http://localhost:8080/AbCd3F
+# HTTP/1.1 301  Location: https://example.com
+```
+
+**Observability UIs:**
+
+| Service | URL |
+|---|---|
+| Jaeger (distributed traces) | http://localhost:16686 |
+| Prometheus (metrics) | http://localhost:9090 |
+| RabbitMQ management | http://localhost:15672 (guest/guest) |
+
+---
+
+## Engineering Highlights
+
+### 1. Redis Consistent Hash Ring (Phase 10B)
+
+Single-node Redis became the bottleneck at high concurrency: the circuit breaker oscillated open/closed, amplifying latency via DB fallback. A 3-node SHA-256 consistent hash ring distributes keys across nodes, keeping per-node request rates within saturation limits.
+
+**Design decisions:**
+- 150 virtual nodes per real node → ≈2–3% distribution error (verified in unit tests)
+- `hashKey`: SHA-256 → `uint32` via `binary.BigEndian.Uint32(h[:4])` — uniform without modular bias
+- `findIndex`: lower-bound binary search on sorted vnode slice — O(log N) routing
+- `Add`/`Remove` methods for dynamic topology; consistent hashing means only ~1/N keys remap on node change
+
+**Measured impact (Mac, Docker VM, 700 VUs):**
+
+| Configuration | p95 latency | CB trips |
+|---|---|---|
+| Single Redis node | ~130ms | Yes (oscillating) |
+| 3-node hash ring | ~60ms | None |
+
+On WSL2 with near-zero Redis latency, the improvement is smaller (ring overhead > benefit at low-to-medium load) — the ring becomes valuable when Redis I/O is the saturation point.
+
+**Key files:**
+- [`services/gateway/internal/cache/ring.go`](services/gateway/internal/cache/ring.go) — hash ring implementation
+- [`services/gateway/internal/cache/ring_test.go`](services/gateway/internal/cache/ring_test.go) — distribution, remap, determinism tests
+- [`services/gateway/internal/infra/infra.go`](services/gateway/internal/infra/infra.go) — `NewCacheRings` multi-node client construction
+
+---
+
+### 2. Circuit Breaker Tuning (Phase 8 → 10B)
+
+Default 5-consecutive-failure trips caused false positives during brief Redis latency spikes. Revised to a dual-condition breaker:
+
+```go
+// Primary: rate-based (more nuanced — filters one-off errors)
+if counts.Requests >= cb.MinRequestsToTrip && rate > cb.FailureRateThreshold {
+    return true
+}
+// Secondary: absolute fast-path for total outages
+return counts.ConsecutiveFailures >= cb.ConsecutiveFailures
+```
+
+Defaults: 50-request window, 20% failure rate, 20 consecutive failures. All tunable via env vars (`CACHE_CB_*`).
+
+Cache calls also use a 50ms `context.WithTimeout` (`CACHE_OPERATION_TIMEOUT`) independent of TCP timeouts — ensures the gateway never blocks on a slow Redis node longer than one request's budget.
+
+---
+
+### 3. Phase 10A: Null Result (DB Read-Write Split)
+
+The hypothesis was that DB pool contention limited throughput. After implementing PG read-write split (separate `readDB`/`writeDB` pools):
+
+| | p95 | req/s |
+|---|---|---|
+| Before (single pool) | 207ms | 5,575 |
+| After (split pools) | 261ms | 4,481 |
+
+**Root cause:** Redis cache absorbs ~99% of redirect reads. The DB pool was never congested — it was idle most of the time. Running two PG containers on WSL2 consumed enough host resources to make after worse than before. The implementation was reverted. This is documented as a deliberate engineering finding: measuring before optimizing.
+
+---
+
+### 4. Chaos Testing (Phase 8)
+
+Five automated fault injection scenarios using Toxiproxy:
+
+| Scenario | Fault | Expected behavior |
+|---|---|---|
+| Redis latency | 200ms added latency to all Redis nodes | Cache CB opens; fallback to DB; fail-open |
+| Redis down | Connection refused | CB stays open; DB handles all reads |
+| Postgres degradation | 500ms added latency | Slow redirects; no errors |
+| Rate limiter fault | gRPC connection reset | Fail-open: all requests proceed |
+| Network partition | All Toxiproxy proxies down | CB open; graceful degradation |
+
+```bash
+# Run all chaos scenarios
+docker compose -f docker-compose.yml -f docker-compose.chaos.yml up --build -d
+./scripts/chaos-test.sh
+
+# Run a specific scenario
+./scripts/chaos-test.sh --scenario 2
+```
+
+---
+
+### 5. Analytics Pipeline (Phase 7)
+
+Click events flow fire-and-forget so redirects are never blocked waiting for analytics:
+
+```
+GET /:code → 301 response (returned immediately)
+              └── goroutine: Publish(ClickEvent) → RabbitMQ
+                                                      └── analytics-worker
+                                                              ├── batch of 100 events
+                                                              └── 5s ticker flush
+                                                                    └── INSERT INTO analytics
+```
+
+The analytics worker uses a no-ack-on-error pattern: DB errors exit the process; `restart: on-failure` in Docker Compose requeues unacked messages automatically. The AMQP connection has a background `watchAndReconnect` goroutine for broker restarts.
+
+---
 
 ## Project Structure
 
 ```
 zhejian-url/
 ├── services/
-│   ├── gateway/              # Go API Gateway
-│   ├── rate-limiter/         # Rust Rate Limiter
-│   └── cache-worker/         # Go/Rust Cache Update Worker
-├── frontend/
-│   ├── dashboard/            # Real-time Dashboard (React/Next.js)
-│   └── chaos-panel/          # Chaos Engineering Panel
-├── infrastructure/
-│   ├── docker/               # Docker configurations
-│   ├── kubernetes/           # K8s manifests (optional)
-│   └── terraform/            # IaC (optional)
+│   ├── gateway/               # Go API Gateway (main service)
+│   │   ├── cmd/server/        # Entry point
+│   │   └── internal/
+│   │       ├── api/           # HTTP handlers + health endpoint
+│   │       ├── cache/         # ClientProvider interface + HashRing
+│   │       ├── config/        # Env var loading (godotenv)
+│   │       ├── infra/         # pgxpool + Redis client construction
+│   │       ├── middleware/     # Logging, metrics, rate-limit
+│   │       ├── observability/ # OTel setup (tracer, meter, logger)
+│   │       ├── ratelimit/     # Hand-written gRPC client stubs
+│   │       ├── repository/    # URLRepository + CachedURLRepository
+│   │       ├── server/        # Router wiring
+│   │       └── service/       # URL shortening business logic
+│   ├── rate-limiter/          # Rust gRPC service (tonic + tokio)
+│   └── analytics-worker/      # Go consumer (separate module)
+├── migrations/                # SQL schema + golang-migrate container
+├── tests/                     # k6 load test scripts
+│   ├── baseline.js            # 100 VUs, p95 SLO validation
+│   ├── spike.js               # 50→300 VU spike test
+│   ├── throughput.js          # Raw ceiling (rate limiter disabled)
+│   ├── endurance.js           # 12-minute stability test
+│   ├── hotkey.js              # Hot-key concentration (Phase 11 prep)
+│   └── analytics-load.js      # Analytics pipeline load test
+├── scripts/
+│   └── chaos-test.sh          # Toxiproxy fault injection scenarios
 ├── observability/
-│   ├── prometheus/           # Prometheus configs
-│   ├── grafana/              # Grafana dashboards
-│   └── otel/                 # OpenTelemetry configs
-├── testing/
-│   ├── load/                 # Load testing (k6, vegeta)
-│   ├── chaos/                # Chaos testing scripts
-│   └── integration/          # Integration tests
-├── scripts/                  # Build and utility scripts
-├── docs/                     # Documentation
-└── docker-compose.yml        # Local development setup
+│   └── prometheus/            # Prometheus scrape configs
+├── docs/
+│   ├── BUILD_PHASES.md        # Full 10-phase build roadmap with findings
+│   └── plans/                 # Per-phase implementation plans
+├── docker-compose.yml         # Dev stack (3 Redis nodes, RabbitMQ, Jaeger)
+├── docker-compose.prod.yml    # Production stack
+├── docker-compose.chaos.yml   # Chaos overlay (adds Toxiproxy)
+└── Makefile                   # load-baseline, load-throughput-*, load-hotkey-*
 ```
 
-## Technology Stack
+---
 
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| API Gateway | Go (Fiber/Gin) | Request routing, backpressure, circuit breaking |
-| Rate Limiter | Rust (Actix/Axum) | Low-latency distributed rate limiting |
-| Primary DB | PostgreSQL | Authoritative URL storage |
-| Cache | Redis | Read-optimized caching |
-| Message Broker | RabbitMQ | Async cache updates, retries |
-| Metrics | Prometheus | System metrics collection |
-| Dashboards | Grafana | Visualization |
-| Tracing | OpenTelemetry + Jaeger | Distributed tracing |
-| Load Testing | k6/Vegeta | Synthetic traffic generation |
-| Chaos Testing | Custom + Toxiproxy | Fault injection |
+## Running Tests
 
-## Getting Started
+```bash
+# Unit + integration tests (spins up real Postgres/Redis/RabbitMQ via testcontainers)
+cd services/gateway && go test ./... -v
+cd services/analytics-worker && go test ./... -v
 
-See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for detailed instructions.
+# Rust rate limiter
+cd services/rate-limiter && cargo test && cargo clippy
 
-## Build Order (Recommended)
+# Load tests (k6 required)
+make load-baseline          # 100 VUs, 9min, rate limiter active
+make load-spike             # 50→300 VU spike
+make load-endurance         # 12min stability (local only)
 
-1. **Phase 1: Core Foundation** - PostgreSQL schema + Go Gateway basics
-2. **Phase 2: Caching Layer** - Redis integration + Cache-aside pattern
-3. **Phase 3: Rate Limiter** - Rust service + gRPC integration
-4. **Phase 4: Async Processing** - RabbitMQ + Cache workers
-5. **Phase 5: Resilience** - Circuit breakers, retries, backpressure
-6. **Phase 6: Observability** - Prometheus, Grafana, OpenTelemetry
-7. **Phase 7: Testing** - Load testing, chaos engineering
-8. **Phase 8: Frontend** - Dashboard + Chaos panel
+# Throughput ceiling (rate limiter must be disabled)
+RATE_LIMITER_ADDR="" make load-throughput-ring    # 3-node hash ring
+RATE_LIMITER_ADDR="" make load-throughput-single  # single node (for comparison)
+```
+
+---
+
+## Configuration
+
+All configuration is via environment variables. Key toggles:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `RATE_LIMITER_ADDR` | `rate-limiter:50051` | Set to `""` to disable rate limiting |
+| `AMQP_URL` | `amqp://guest:guest@rabbitmq:5672/` | Set to `""` to disable analytics |
+| `CACHE_NODES` | `redis-1:6379,redis-2:6379,redis-3:6379` | Comma-separated Redis nodes |
+| `CACHE_OPERATION_TIMEOUT` | `150ms` | Per-cache-call context deadline |
+| `CACHE_CB_MIN_REQUESTS` | `50` | CB window size before rate check |
+| `CACHE_CB_FAILURE_RATE` | `0.2` | CB trip threshold (0.0–1.0) |
+| `DB_REPLICA_URL` | `""` | Read replica (Phase 10A — reverted, documented) |
+
+---
+
+## Build Phases
+
+| Phase | Description | Status |
+|---|---|---|
+| 1 | Core CRUD API + PostgreSQL schema | ✅ Complete |
+| 2 | CI + test automation (GitHub Actions) | ✅ Complete |
+| 3 | Docker Compose + init-container migrations | ✅ Complete |
+| 4 | Redis cache-aside + circuit breaker + singleflight | ✅ Complete |
+| 5 | OTel tracing + Prometheus metrics + structured logging | ✅ Complete |
+| 6 | Rust gRPC rate limiter (token bucket, fail-open) | ✅ Complete |
+| 7 | Analytics pipeline (RabbitMQ + async worker) | ✅ Complete |
+| 8 | Chaos testing (Toxiproxy, 5 scenarios, CI workflow) | ✅ Complete |
+| 9 | k6 load testing (baseline/spike/endurance/throughput) | ✅ Complete |
+| 10A | PG read-write split | ✅ Attempted + reverted (null result, documented) |
+| 10B | Redis consistent hash ring (3 nodes) | ✅ Complete |
+| 10C | RabbitMQ competing consumers + quorum queue | Planned |
+| 10D | PgBouncer connection pooling | Planned |
+| 11 | Per-node circuit breakers + hot-key chaos | Planned |
+
+See [docs/BUILD_PHASES.md](docs/BUILD_PHASES.md) for detailed task lists, design rationale, and measured results per phase.
+
+---
 
 ## License
 

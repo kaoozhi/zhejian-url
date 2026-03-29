@@ -61,8 +61,10 @@ cleanup() {
   echo ""
   echo "--- cleanup ---"
   $TOXIPROXY toxic delete -n latency_downstream rate-limiter 2>/dev/null || true
-  $TOXIPROXY toxic delete -n latency_downstream redis 2>/dev/null || true
-  $TOXIPROXY toxic delete -n timeout_downstream redis 2>/dev/null || true
+  for node in redis-1 redis-2 redis-3; do
+    $TOXIPROXY toxic delete -n latency_downstream "$node" 2>/dev/null || true
+    $TOXIPROXY toxic delete -n timeout_downstream "$node" 2>/dev/null || true
+  done
   $COMPOSE down -v 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -184,8 +186,10 @@ scenario_2() {
     sleep 30
   fi
 
-  $TOXIPROXY toxic add -t latency -a latency=200 redis
-  pass "Injected 200ms latency on Redis proxy (exceeds 50ms operation timeout)"
+  for node in redis-1 redis-2 redis-3; do
+    $TOXIPROXY toxic add -t latency -a latency=200 "$node"
+  done
+  pass "Injected 200ms latency on all Redis proxies (exceeds 50ms operation timeout)"
 
   # 5 consecutive timeouts open the circuit breaker (ConsecutiveFailures=5).
   # Subsequent requests fall back to DB. All must return 301.
@@ -210,7 +214,9 @@ scenario_2() {
     fail "Scenario 2: health check did not report cache_cb=open"
   fi
 
-  $TOXIPROXY toxic delete -n latency_downstream redis
+  for node in redis-1 redis-2 redis-3; do
+    $TOXIPROXY toxic delete -n latency_downstream "$node"
+  done
   pass "Scenario 2: removed Redis latency toxic"
   echo "    Waiting 32s for circuit breaker to recover..."
   sleep 32
@@ -231,8 +237,10 @@ scenario_3() {
   echo ""
   echo "=== Scenario 3: Redis complete failure → CB opens → DB fallback ==="
 
-  $TOXIPROXY toxic add -t timeout -a timeout=0 redis
-  pass "Injected timeout=0 (connection drop) on Redis proxy"
+  for node in redis-1 redis-2 redis-3; do
+    $TOXIPROXY toxic add -t timeout -a timeout=0 "$node"
+  done
+  pass "Injected timeout=0 (connection drop) on all Redis proxies"
 
   all_ok=true
   for i in $(seq 1 10); do
@@ -244,7 +252,9 @@ scenario_3() {
   done
   if [ "$all_ok" = "true" ]; then pass "Scenario 3: all 10 requests returned 301 with Redis down"; fi
 
-  $TOXIPROXY toxic delete -n timeout_downstream redis
+  for node in redis-1 redis-2 redis-3; do
+    $TOXIPROXY toxic delete -n timeout_downstream "$node"
+  done
   pass "Scenario 3: restored Redis"
   echo "    Waiting 32s for circuit breaker to recover..."
   sleep 32
