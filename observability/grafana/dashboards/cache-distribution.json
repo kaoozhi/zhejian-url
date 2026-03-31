@@ -102,7 +102,8 @@
       },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "background"
+        "colorMode": "background",
+        "orientation": "horizontal"
       }
     },
     {
