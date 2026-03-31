@@ -129,9 +129,11 @@ services:
   # RabbitMQ - Message broker
   rabbitmq:
     image: rabbitmq:4-management-alpine
+    command: sh -c "rabbitmq-plugins enable rabbitmq_prometheus && exec rabbitmq-server"
     ports:
       - "5672:5672"
       - "15672:15672"
+      - "15692:15692" # Prometheus metrics
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
