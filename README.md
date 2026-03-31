@@ -6,7 +6,7 @@
 
 # Zhejian URL Shortener
 
-A production-grade URL shortener built incrementally across 10 engineering phases — from a bare CRUD API to a distributed system with a consistent hash ring, chaos-tested resilience patterns, and load-tested throughput benchmarks.
+A production-grade URL shortener built incrementally across 13 engineering phases — from a bare CRUD API to a distributed system with a consistent hash ring, chaos-tested resilience patterns, and load-tested throughput benchmarks.
 
 **Key results:**
 - **8,100 req/s** redirect throughput at p95=193ms (WSL2, 1000 VUs, 0% errors, rate limiter disabled)
@@ -176,20 +176,54 @@ docker compose -f docker-compose.yml -f docker-compose.chaos.yml up --build -d
 
 ---
 
-### 5. Analytics Pipeline (Phase 7)
+### 5. Analytics Pipeline + Competing Consumers (Phase 7 → 10C)
 
 Click events flow fire-and-forget so redirects are never blocked waiting for analytics:
 
 ```
 GET /:code → 301 response (returned immediately)
               └── goroutine: Publish(ClickEvent) → RabbitMQ
-                                                      └── analytics-worker
+                                                      └── analytics-worker(s)
                                                               ├── batch of 100 events
                                                               └── 5s ticker flush
                                                                     └── INSERT INTO analytics
 ```
 
 The analytics worker uses a no-ack-on-error pattern: DB errors exit the process; `restart: on-failure` in Docker Compose requeues unacked messages automatically. The AMQP connection has a background `watchAndReconnect` goroutine for broker restarts.
+
+**Phase 10C — competing consumers:** a single worker cannot drain the queue fast enough under high load. Queue depth grew monotonically to **~600k messages** during a 4-minute throughput test. Scaling to 3 competing consumers brought it to effectively zero.
+
+**Before — 1 worker (queue grows to 600k):**
+
+![1 worker — queue grows unboundedly](docs/findings/1_worker.png)
+
+The staircase shape reflects batch flush cycles. At ~5000 req/s the publish rate is ~300k events/min; one worker drains ~2000 events/min — a 150:1 backlog ratio.
+
+**After — 3 workers (queue stays at 0):**
+
+![3 workers — queue stays near zero](docs/findings/3_workers.png)
+
+Queue depth never exceeded 3 messages. The brief spike to 3 is one message per worker in the prefetch window before the first ack — not a backlog.
+
+No code change for competing consumers — `docker compose up -d --scale analytics-worker=3` is sufficient. The only code change was upgrading to a **quorum queue** for broker-crash durability:
+
+```go
+args := amqp.Table{
+    "x-dead-letter-exchange":    "",
+    "x-dead-letter-routing-key": dlqName,
+    "x-queue-type":              "quorum", // Raft-replicated; survives node crashes
+}
+```
+
+| Metric | 1 worker | 3 workers |
+|---|---|---|
+| Peak queue depth | ~600,000 | 3 |
+| Queue at end of test | ~240,000 (growing) | 0 |
+| Redirect p95 | Unchanged | Unchanged |
+
+**Key files:**
+- [`services/analytics-worker/internal/consumer/consumer.go`](services/analytics-worker/internal/consumer/consumer.go) — batch consumer + quorum queue declaration
+- [`docs/findings/2026-03-31-phase-10c-competing-consumers.md`](docs/findings/2026-03-31-phase-10c-competing-consumers.md) — full findings
 
 ---
 
@@ -289,9 +323,11 @@ All configuration is via environment variables. Key toggles:
 | 9 | k6 load testing (baseline/spike/endurance/throughput) | ✅ Complete |
 | 10A | PG read-write split | ✅ Attempted + reverted (null result, documented) |
 | 10B | Redis consistent hash ring (3 nodes) | ✅ Complete |
-| 10C | RabbitMQ competing consumers + quorum queue | Planned |
-| 10D | PgBouncer connection pooling | Planned |
-| 11 | Per-node circuit breakers + hot-key chaos | Planned |
+| 10C | RabbitMQ competing consumers + quorum queue | ✅ Complete |
+| 10D | PgBouncer connection pooling | Skipped (DB not bottleneck, same as 10A) |
+| 11 | Grafana dashboards & alerting | Planned |
+| 12 | Chaos engineering lite (automated scenarios) | Planned |
+| 13 | Documentation & polish | Planned |
 
 See [docs/BUILD_PHASES.md](docs/BUILD_PHASES.md) for detailed task lists, design rationale, and measured results per phase.
 

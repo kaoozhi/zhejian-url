@@ -717,17 +717,11 @@ Single Redis node saturates at ~5600 req/s (~11,000 ops/s with GET+SET per redir
 
 ---
 
-#### Phase 10D: PgBouncer Connection Pooling
+#### Phase 10D: PgBouncer Connection Pooling — SKIPPED
 
-**Hypothesis:** Multiple gateway instances each hold their own pgxpool. Total PG connections = `instances × pool_size`. PgBouncer proxies all connections into a fixed backend pool; PostgreSQL sees constant connection count regardless of gateway count.
+**Skipped — DB not the bottleneck (same conclusion as 10A).**
 
-**Implicit toggle:** `DB_PRIMARY_URL` / `DB_REPLICA_URL` point to postgres directly (off) or to pgbouncer (on). Zero Go code change.
-
-**Files touched:**
-- `pgbouncer/pgbouncer-write.ini` + `pgbouncer-read.ini` + `userlist.txt` — new config files
-- `docker-compose.yml` — add `pgbouncer-write`, `pgbouncer-read` services; update gateway env DSNs with `default_query_exec_mode=simple_protocol`
-
-**Expected delta:** `pg_stat_activity` count constant at 15 (5 write + 10 read) regardless of gateway instance count.
+PgBouncer solves `N instances × pool_size` connection exhaustion, which requires horizontal gateway scaling to manifest. With 1 gateway instance and a 10-connection pool, the expected delta (constant 15 connections) is a configuration metric, not a performance story. Phase 10A already proved the DB pool is idle under load — Redis saturation is the bottleneck. Implementing PgBouncer here would produce a null result for the same reason 10A did.
 
 ---
 
@@ -738,92 +732,65 @@ Single Redis node saturates at ~5600 req/s (~11,000 ops/s with GET+SET per redir
 | 10A PG read-write split | Read/write contention on single pool | p95=212ms | p95=261ms — **null result**, DB pool not the bottleneck |
 | 10B Redis hash ring | Single Redis connection throughput ceiling | ~5600 req/s plateau | higher plateau or lower p95 |
 | 10C Competing consumers | Single worker, queue grows unboundedly | Queue depth growing | Queue depth stable |
-| 10D PgBouncer | Connections = instances × pool size | N × 10 PG connections | 15 constant |
+| 10D PgBouncer | Connections = instances × pool size | N × 10 PG connections | **skipped** — DB not the bottleneck (same as 10A) |
 
 ### Deliverables
-- `docker-compose.yml` — postgres-replica, redis-2/3, pgbouncer-write/read
+- `docker-compose.yml` — redis-2/3 (hash ring)
 - `services/gateway/internal/cache/ring.go` + `ring_test.go`
-- `services/gateway/internal/repository/url_repository.go` — read-write routing
 - `services/gateway/internal/repository/cached_url_repository.go` — CacheRouter interface
 - `services/analytics-worker/internal/consumer/consumer.go` — quorum queue declaration
-- `pgbouncer/` — config files
 - `results/throughput-before-*.html` + `results/throughput-after-*.html` — before/after HTML reports
 
 ---
 
-## Phase 11: Chaos Engineering Deep Dive 🎯 PLANNED
+## Phase 12: Chaos Engineering Lite 🎯 PLANNED
 
 ### Objective
-Comprehensive chaos testing with automated scenarios and visual dashboards.
+Make the existing Toxiproxy chaos infrastructure runnable with pass/fail assertions. Add the analytics resilience scenario that operationalises the Phase 10C finding.
 
 **Prerequisites:** Toxiproxy infrastructure and basic chaos scenarios from Phase 8.
 
+**Scope note:** No chaos dashboard UI (frontend work, low portfolio signal for a systems engineering project). No CI nightly pipeline (maintenance overhead not worth it). Focus is on clean, scriptable scenarios with observable output.
+
 ### Tasks
 1. **Automated Chaos Scenarios**
-   - All 5 scenarios from Phase 8 automated
-   - Chaos testing pipeline in CI (optional, nightly)
-   - Experiment tracking (what, when, result)
+   - Refactor `scripts/chaos-test.sh` — existing 5 scenarios produce pass/fail assertions instead of requiring manual observation
+   - Each scenario: inject fault → assert degraded behaviour → remove fault → assert recovery
 
-2. **Chaos Testing Dashboard** 🆕
-   - Real-time metrics during chaos experiments
-   - Experiment history and results
-   - UI to trigger Toxiproxy failures
-   - Recovery time tracking
-
-3. **Chaos Scenarios with Analytics** 🎯
-   - Run analytics load test DURING chaos
-   - Verify queue absorbs traffic when worker dies
-   - Measure recovery time when services restored
-
-   **Example: Analytics Resilience Test**
+2. **Analytics Resilience Scenario** 🎯
+   - Operationalises the Phase 10C finding: queue absorbs traffic when workers are down
    ```bash
-   # Start analytics load
-   k6 run --vus 1000 --duration 120s clicks.js &
-   
-   # t=30s: Kill all analytics workers
-   docker-compose stop analytics-worker
-   
-   # Observe:
-   # - Redirects still fast (<10ms)
-   # - Queue depth grows
-   # - No analytics processed
-   
-   # t=60s: Restart workers
-   docker-compose up -d analytics-worker
-   
-   # Observe:
-   # - Queue drains
-   # - All events eventually processed
-   # - Zero data loss
-   
-   # Result: System resilient to worker failures
+   ./scripts/chaos-test.sh --scenario analytics-resilience
+   # 1. Start k6 load (background, 60s)
+   # 2. Assert queue depth < 10 (workers draining normally)
+   # 3. docker compose stop analytics-worker
+   # 4. Assert queue depth > 1000 after 10s (backlog building)
+   # 5. docker compose up -d analytics-worker
+   # 6. Assert queue depth < 10 after 30s (drained)
+   # PASS
    ```
 
-4. **Documentation**
-   - Chaos testing runbook
-   - Expected behavior for each scenario
-   - Recovery procedures
+3. **Runbook**
+   - `docs/findings/chaos-runbook.md` — scenario descriptions, expected outputs, recovery procedures
 
 ### Deliverables
-- 10+ chaos scenarios automated
-- Chaos dashboard (optional: simple HTML/React)
-- Video/GIF demos of key scenarios
-- Complete chaos testing documentation
+- Updated `scripts/chaos-test.sh` with pass/fail assertions for all 6 scenarios
+- `docs/findings/chaos-runbook.md`
 
 ---
 
-## Phase 12: Dashboards & Alerting
+## Phase 11: Grafana Dashboards & Alerting 🎯 NEXT
 
 ### Objective
-Complete the observability stack with Grafana dashboards and alerting rules. Builds on the OTel/Prometheus/Jaeger infrastructure from Phase 5 and makes the Phase 10 before/after scaling comparisons visually compelling with persistent dashboard panels.
+Complete the observability stack with provisioned Grafana dashboards and alert rules. Builds on the Prometheus/OTel infrastructure from Phase 5 and makes the Phase 10 scaling comparisons visually compelling with persistent dashboard panels.
+
+**Scope note:** No log aggregation (Loki/ELK adds a week of infra work with no visual delta over existing Prometheus). Dashboards provisioned as code — no manual Grafana UI clicks needed.
 
 ### Tasks
-1. **Grafana Dashboards**
-   - System overview (RED metrics: Rate, Errors, Duration)
-   - Per-service dashboards (Gateway, Rate Limiter, Workers)
-   - Chaos testing dashboard (circuit breaker states, recovery times)
-   - Analytics pipeline dashboard (queue depth, processing rate)
-   - Trace integration (link from dashboard panels to Jaeger traces)
+1. **Grafana Dashboards** (provisioned via `observability/grafana/provisioning/`)
+   - System overview — RED metrics (rate, errors, duration), circuit breaker state, cache hit rate
+   - Analytics pipeline — queue depth (`rabbitmq_queue_messages_ready`), drain rate, worker count
+   - Scaling comparison — Phase 10B (single node vs. hash ring p95/CB trips) and 10C (1 worker vs. 3 workers queue depth) side by side
 
 2. **Alert Rules**
    - High error rate (>1%)
@@ -832,56 +799,50 @@ Complete the observability stack with Grafana dashboards and alerting rules. Bui
    - Queue depth growing (>10k messages)
    - DLQ not empty
 
-3. **Enhanced Logging & Aggregation** (builds on Phase 5 `slog` implementation)
-   - Detailed request/response body logging (optional, configurable)
-   - Log aggregation setup (Loki, ELK, or CloudWatch)
-   - Log-based alerting rules
-   - Log retention policies
+### Files
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | Add `grafana` service |
+| `observability/grafana/provisioning/datasources/prometheus.yml` | Auto-configure Prometheus datasource |
+| `observability/grafana/provisioning/dashboards/dashboards.yml` | Dashboard provider config |
+| `observability/grafana/dashboards/system-overview.json` | RED metrics + CB + cache hit rate |
+| `observability/grafana/dashboards/analytics-pipeline.json` | Queue depth + drain rate |
+| `observability/grafana/dashboards/scaling-comparison.json` | Phase 10B/10C before/after panels |
+| `observability/prometheus/alert-rules.yml` | Alert rule definitions |
 
 ### Deliverables
-- Production-ready Grafana dashboards
-- Alert rules configured (metrics + logs)
-- Log aggregation infrastructure (Loki/ELK/CloudWatch)
-- Enhanced logging with request/response details
+- Grafana running at `:3000`, dashboards load automatically on `docker compose up`
+- Alert rules configured in Prometheus
 
 ---
 
 ## Phase 13: Documentation & Polish
 
 ### Objective
-Create portfolio-quality documentation and demo materials.
+Portfolio-quality README and demo materials. No code changes.
+
+**Scope note:** No OpenAPI spec (not the portfolio's story). No code cleanup (codebase is already clean). Video walkthrough optional — do last if time permits.
 
 ### Tasks
-1. **Architecture Documentation**
-   - System architecture diagram
-   - Data flow diagrams
-   - Deployment architecture
-   - Decision logs (ADRs)
+1. **Architecture Diagram** (Mermaid)
+   - Request flow: Client → Gateway → Rate Limiter → Redis ring → DB → RabbitMQ → Worker
+   - Service topology with ports
 
-2. **README Excellence**
-   - Clear project overview
-   - Quick start guide
-   - Demo instructions
-   - Architecture section
-   - Performance benchmarks
-   - Chaos testing showcase
+2. **README Update**
+   - Add Grafana dashboard screenshots
+   - Embed architecture diagram
+   - Update phase completion table
 
-3. **Demo Materials**
-   - 5-minute demo script
-   - Screenshots/GIFs of chaos scenarios
-   - Performance comparison charts
-   - Video walkthrough (optional)
-
-4. **Code Quality**
-   - Code cleanup and refactoring
-   - Comprehensive comments
-   - API documentation (OpenAPI spec)
+3. **Demo Script**
+   - 5-minute script covering three stories:
+     1. Load test → hash ring improvement (Phase 10B)
+     2. Chaos → circuit breaker recovery (Phase 8/12)
+     3. Kill workers → queue absorbs → drain (Phase 10C/12)
 
 ### Deliverables
-- Professional README with visuals
-- Architecture diagrams
-- Demo script and materials
-- Clean, well-documented codebase
+- Mermaid architecture diagram in README
+- README with Grafana screenshots
+- `docs/demo-script.md`
 
 ---
 
@@ -897,9 +858,9 @@ Week 6-7:  ✅ Phase 6  - Rust Rate Limiter + gRPC
 Week 7-8:  ✅ Phase 7  - RabbitMQ Click Analytics
 Week 8-9:  ✅ Phase 8  - Resilience Patterns + Toxiproxy
 Week 9:    ✅ Phase 9  - Load Testing (baseline: p95=185ms at 700 VUs, ~5600 req/s ceiling)
-Week 10-11: Phase 10 - Scaling Patterns + Before/After Measurement (10A-10D)
-Week 12:   Phase 11 - Chaos Engineering (Extended)
-Week 13:   Phase 12 - Dashboards & Alerting (retroactive scaling comparison panels)
+Week 10-11: ✅ Phase 10 - Scaling Patterns + Before/After Measurement (10A-10C; 10D skipped — DB not bottleneck)
+Week 12:   Phase 11 - Grafana Dashboards & Alerting (highest portfolio signal)
+Week 13:   Phase 12 - Chaos Engineering Lite (automated scenarios + analytics-resilience)
 Week 14-15: Phase 13 - Documentation & Polish
 ```
 
