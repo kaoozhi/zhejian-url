@@ -1,0 +1,49 @@
+groups:
+  - name: gateway
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.01
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP error rate"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes (threshold: 1%)"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 0.2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency above 200ms"
+          description: "p95 latency is {{ $value | humanizeDuration }} (threshold: 200ms)"
+
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state == 2
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker open: {{ $labels.name }}"
+          description: "Circuit breaker {{ $labels.name }} has been open for more than 30 seconds"
+
+  - name: analytics
+    rules:
+      - alert: QueueDepthHigh
+        expr: rabbitmq_queue_messages_ready{queue="analytics.clicks"} > 10000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Analytics queue backlog growing"
+          description: "Queue analytics.clicks has {{ $value }} ready messages (threshold: 10000)"
+
+      - alert: DLQNotEmpty
+        expr: rabbitmq_queue_messages_ready{queue="analytics.clicks.dlq"} > 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dead letter queue has messages"
+          description: "{{ $value }} messages in analytics.clicks.dlq — events are being dropped"
