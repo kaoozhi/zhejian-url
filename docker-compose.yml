@@ -69,8 +69,8 @@ services:
       context: .
       dockerfile: services/rate-limiter/Dockerfile
       args:
-        HTTP_PROXY: ${HTTP_PROXY:-http://squid.tls.renault.fr:911}
-        HTTPS_PROXY: ${HTTPS_PROXY:-http://squid.tls.renault.fr:911}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
       REDIS_URL: redis://redis-1:6379
@@ -87,8 +87,8 @@ services:
     build:
       context: ./services/gateway
       args:
-        HTTP_PROXY: ${HTTP_PROXY:-http://squid.tls.renault.fr:911}
-        HTTPS_PROXY: ${HTTPS_PROXY:-http://squid.tls.renault.fr:911}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
       DB_HOST: ${DB_HOST:-postgres}
@@ -131,7 +131,7 @@ services:
       rabbitmq:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -157,8 +157,8 @@ services:
     build:
       context: ./services/analytics-worker
       args:
-        HTTP_PROXY: ${HTTP_PROXY:-http://squid.tls.renault.fr:911}
-        HTTPS_PROXY: ${HTTPS_PROXY:-http://squid.tls.renault.fr:911}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     env_file: .env
     environment:
