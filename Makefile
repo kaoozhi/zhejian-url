@@ -184,10 +184,13 @@ load-throughput-ring:
 		script -q results/throughput-ring.log k6 run tests/throughput.js; \
 	fi
 
-## Phase 10B: host gateway + 3-node Redis ring (docker infra only)
+## Phase 10B/10C: host gateway + 3-node Redis ring + RabbitMQ + Prometheus
 ## Uses host-mapped Redis ports: 6379 (redis-1), 6380 (redis-2), 6381 (redis-3).
+## Analytics publishing is enabled so queue depth is visible in Prometheus (:9090).
+## Scale workers before running to compare: docker compose up -d --scale analytics-worker=N
+## Prometheus query: rabbitmq_queue_messages_ready{queue="analytics.clicks"}
 load-throughput-ring-host:
-	docker compose up -d postgres migrations redis-1 redis-2 redis-3
+	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq analytics-worker prometheus
 	docker compose stop gateway || true
 	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
 	if [ -n "$$existing_pid" ]; then \
@@ -195,14 +198,17 @@ load-throughput-ring-host:
 		kill $$existing_pid || true; \
 		sleep 1; \
 	fi
-	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway.log)"
+	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway-ring.log)"
 	@cd services/gateway && \
-		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' AMQP_URL='' \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
+		AMQP_URL=amqp://guest:guest@localhost:5672/ \
 		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
 		CACHE_CB_MIN_REQUESTS=50 CACHE_CB_FAILURE_RATE=0.2 CACHE_CB_CONSECUTIVE_FAILURES=0 CACHE_CB_TIMEOUT=30s \
 		go run cmd/server/main.go > host-gateway-ring.log 2>&1 & \
 		echo $$! > host-gateway.pid
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	@echo "Stack ready. Prometheus at http://localhost:9090"
+	@echo "Query: rabbitmq_queue_messages_ready{queue=\"analytics.clicks\"}"
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
@@ -214,6 +220,76 @@ load-throughput-ring-host:
 	fi
 	@echo "Host gateway running with PID $$(cat services/gateway/host-gateway.pid)."
 	@echo "Stop with: kill $$(cat services/gateway/host-gateway.pid)"
+
+## Phase 10C: competing consumers — 1 worker baseline (queue should grow unboundedly)
+## Host gateway + 3-node Redis ring + RabbitMQ. Prometheus query:
+## rabbitmq_queue_messages_ready{queue="analytics.clicks"}
+load-queue-1worker:
+	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq
+	docker compose up -d --no-deps prometheus
+	docker compose up -d --no-deps --scale analytics-worker=1 analytics-worker
+	docker compose stop gateway || true
+	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
+	if [ -n "$$existing_pid" ]; then \
+		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
+		kill $$existing_pid || true; \
+		sleep 1; \
+	fi
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
+		AMQP_URL=amqp://guest:guest@localhost:5672/ \
+		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
+		CACHE_CB_MIN_REQUESTS=50 CACHE_CB_FAILURE_RATE=0.2 CACHE_CB_CONSECUTIVE_FAILURES=0 CACHE_CB_TIMEOUT=30s \
+		go run cmd/server/main.go > host-gateway-ring.log 2>&1 & \
+		echo $$! > host-gateway.pid
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	@echo "1 analytics worker running. Prometheus at http://localhost:9090"
+	@echo "Query: rabbitmq_queue_messages_ready{queue=\"analytics.clicks\"}"
+	mkdir -p results
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-1worker.html \
+		script -q -c "k6 run tests/throughput.js" results/queue-1worker.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-1worker.html \
+		script -q results/queue-1worker.log k6 run tests/throughput.js; \
+	fi
+	@echo "Stop gateway with: kill $$(cat services/gateway/host-gateway.pid)"
+
+## Phase 10C: competing consumers — 3 workers (queue should stabilise)
+## Host gateway + 3-node Redis ring + RabbitMQ. Run after load-queue-1worker to compare.
+## Prometheus query: rabbitmq_queue_messages_ready{queue="analytics.clicks"}
+load-queue-3workers:
+	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq
+	docker compose up -d --no-deps prometheus
+	docker compose up -d --no-deps --scale analytics-worker=3 analytics-worker
+	docker compose stop gateway || true
+	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
+	if [ -n "$$existing_pid" ]; then \
+		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
+		kill $$existing_pid || true; \
+		sleep 1; \
+	fi
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
+		AMQP_URL=amqp://guest:guest@localhost:5672/ \
+		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
+		CACHE_CB_MIN_REQUESTS=50 CACHE_CB_FAILURE_RATE=0.2 CACHE_CB_CONSECUTIVE_FAILURES=0 CACHE_CB_TIMEOUT=30s \
+		go run cmd/server/main.go > host-gateway-ring.log 2>&1 & \
+		echo $$! > host-gateway.pid
+	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	@echo "3 analytics workers running. Prometheus at http://localhost:9090"
+	@echo "Query: rabbitmq_queue_messages_ready{queue=\"analytics.clicks\"}"
+	mkdir -p results
+	@set -e; \
+	if script --version > /dev/null 2>&1; then \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-3workers.html \
+		script -q -c "k6 run tests/throughput.js" results/queue-3workers.log; \
+	else \
+		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-3workers.html \
+		script -q results/queue-3workers.log k6 run tests/throughput.js; \
+	fi
+	@echo "Stop gateway with: kill $$(cat services/gateway/host-gateway.pid)"
 
 ## Phase 11: hot-key stress, single CB (before) — 20 URLs, CB should trip
 load-hotkey-single-cb:
@@ -323,7 +399,10 @@ help:
 	@echo "  make load-endurance  Endurance (100 VUs, 12 min, local only)"
 	@echo "  make load-throughput Throughput ceiling (rate limiter disabled)"
 	@echo "  make load-throughput-single-host Host gateway + single Redis throughput"
-	@echo "  make load-throughput-ring-host Host gateway + 3-node ring throughput"
+	@echo "  make load-throughput-ring-host Host gateway + 3-node ring throughput (1 worker)"
+	@echo "  make load-throughput-ring-host-3workers Host gateway + 3-node ring + 3 workers"
+	@echo "  make load-queue-1worker  Phase 10C: queue depth with 1 analytics worker"
+	@echo "  make load-queue-3workers Phase 10C: queue depth with 3 analytics workers"
 	@echo "  make load-analytics  Analytics simulation (Zipf, 50 VUs)"
 	@echo ""
 	@echo "Chaos Testing:"

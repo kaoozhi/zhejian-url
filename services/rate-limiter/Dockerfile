@@ -2,6 +2,12 @@
 # Build context must be repo root: docker build -f services/rate-limiter/Dockerfile .
 # WORKDIR mirrors repo layout so ../../proto/ratelimit.proto resolves correctly from build.rs
 FROM rust:1.85-alpine AS builder
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=$HTTP_PROXY
+ENV HTTPS_PROXY=$HTTPS_PROXY
+ENV NO_PROXY=$NO_PROXY
 RUN apk add --no-cache musl-dev
 WORKDIR /repo
 
@@ -23,7 +29,7 @@ RUN touch services/rate-limiter/src/main.rs \
 
 # Production stage
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 WORKDIR /app
 COPY --from=builder /repo/services/rate-limiter/target/release/rate-limiter .
 EXPOSE 50051

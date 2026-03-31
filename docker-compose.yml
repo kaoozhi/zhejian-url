@@ -16,9 +16,10 @@ services:
       retries: 5
 
   migrations:
-    build: ./migrations
-    environment:
-      DATABASE_URL: postgres://${DB_USER:-zhejian}:${DB_PASSWORD:-zhejian_secret}@postgres:5432/${DB_NAME:-urlshortener}?sslmode=disable
+    image: migrate/migrate:v4.19.1
+    volumes:
+      - ./migrations/schema:/migrations
+    command: ["-path=/migrations", "-database=postgres://${DB_USER:-zhejian}:${DB_PASSWORD:-zhejian_secret}@postgres:5432/${DB_NAME:-urlshortener}?sslmode=disable", "up"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,6 +68,10 @@ services:
     build:
       context: .
       dockerfile: services/rate-limiter/Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
       REDIS_URL: redis://redis-1:6379
       GRPC_PORT: "50051"
@@ -79,7 +84,12 @@ services:
         condition: service_healthy
 
   gateway:
-    build: ./services/gateway
+    build:
+      context: ./services/gateway
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
       DB_HOST: ${DB_HOST:-postgres}
       DB_PORT: ${DB_PORT:-5432}
@@ -121,7 +131,7 @@ services:
       rabbitmq:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -129,9 +139,11 @@ services:
   # RabbitMQ - Message broker
   rabbitmq:
     image: rabbitmq:4-management-alpine
+    command: sh -c "rabbitmq-plugins enable rabbitmq_prometheus && exec rabbitmq-server"
     ports:
       - "5672:5672"
       - "15672:15672"
+      - "15692:15692" # Prometheus metrics
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -144,6 +156,10 @@ services:
   analytics-worker:
     build:
       context: ./services/analytics-worker
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     env_file: .env
     environment:
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/

@@ -51,8 +51,13 @@ func New(conn *amqp.Connection, repo *repository.Repository, logger *slog.Logger
 // Topology:
 //
 //	exchange "analytics" (topic, durable)
-//	    └── queue "analytics.clicks" (durable, x-dead-letter → dlq)
+//	    └── queue "analytics.clicks" (quorum, x-dead-letter → dlq)
 //	    └── queue "analytics.clicks.dlq" (durable, catch-all for nack'd messages)
+//
+// The main queue is declared as a quorum queue (Raft-replicated). This requires
+// RabbitMQ 3.8+ and means message state is persisted across a quorum of nodes,
+// surviving broker restarts without data loss. Queue type cannot be changed after
+// creation — requires docker compose down -v to reset if switching from classic.
 func (c *Consumer) Setup() error {
 	ch, err := c.conn.Channel()
 	if err != nil {
@@ -70,11 +75,14 @@ func (c *Consumer) Setup() error {
 		return err
 	}
 
-	// Declare the main queue with dead-letter routing:
+	// Declare the main queue with dead-letter routing and quorum replication:
 	// any nack(requeue=false) is forwarded to dlqName via the default exchange ("").
+	// x-queue-type=quorum uses Raft consensus to replicate queue state across nodes,
+	// ensuring no in-flight messages are lost if RabbitMQ restarts mid-burst.
 	args := amqp.Table{
-		"x-dead-letter-exchange":    "",      // default exchange routes by queue name
-		"x-dead-letter-routing-key": dlqName, // target queue for dead-lettered messages
+		"x-dead-letter-exchange":    "",       // default exchange routes by queue name
+		"x-dead-letter-routing-key": dlqName,  // target queue for dead-lettered messages
+		"x-queue-type":              "quorum", // Raft-replicated; survives node restarts
 	}
 	if _, err := ch.QueueDeclare(queueName, true, false, false, false, args); err != nil {
 		return err
