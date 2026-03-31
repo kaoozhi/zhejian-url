@@ -2,7 +2,9 @@ groups:
   - name: gateway
     rules:
       - alert: HighErrorRate
-        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.01
+        expr: >-
+          (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 0.01
+          and sum(rate(http_requests_total[5m])) > 0
         for: 1m
         labels:
           severity: warning
@@ -17,7 +19,7 @@ groups:
           severity: warning
         annotations:
           summary: "p95 latency above 200ms"
-          description: "p95 latency is {{ $value | humanizeDuration }} (threshold: 200ms)"
+          description: "p95 latency is {{ $value | humanize }}s (threshold: 200ms)"
 
       - alert: CircuitBreakerOpen
         expr: circuit_breaker_state == 2
