@@ -97,22 +97,18 @@ curl -v http://localhost:8080/AbCd3F
 
 ### 1. Redis Consistent Hash Ring (Phase 10B)
 
-Single-node Redis became the bottleneck at high concurrency: the circuit breaker oscillated open/closed, amplifying latency via DB fallback. A 3-node SHA-256 consistent hash ring distributes keys across nodes, keeping per-node request rates within saturation limits.
+A SHA-256 consistent hash ring routes cache keys across 3 Redis nodes. All tests ran on a single machine (Mac or WSL2), so all three Redis processes share the same CPU, memory, and loopback interface — adding nodes redistributes routing, not capacity. Throughput was identical between single-node and ring configurations at high VU counts: on a shared host, the ring is a **routing-correctness exercise**, not a throughput experiment.
+
+The observable result in Prometheus is **even key distribution across nodes** (see dashboard screenshot below). To see a real throughput benefit, the nodes would need to run on separate machines — out of scope for this project.
+
+![load distribution across node](docs/findings/cache_node_load.png)
 
 **Design decisions:**
 - 150 virtual nodes per real node → ≈2–3% distribution error (verified in unit tests)
 - `hashKey`: SHA-256 → `uint32` via `binary.BigEndian.Uint32(h[:4])` — uniform without modular bias
 - `findIndex`: lower-bound binary search on sorted vnode slice — O(log N) routing
 - `Add`/`Remove` methods for dynamic topology; consistent hashing means only ~1/N keys remap on node change
-
-**Measured impact (Mac, Docker VM, 700 VUs):**
-
-| Configuration | p95 latency | CB trips |
-|---|---|---|
-| Single Redis node | ~130ms | Yes (oscillating) |
-| 3-node hash ring | ~60ms | None |
-
-On WSL2 with near-zero Redis latency, the improvement is smaller (ring overhead > benefit at low-to-medium load) — the ring becomes valuable when Redis I/O is the saturation point.
+- `ClientProvider` interface: `CachedURLRepository` is unchanged whether backed by one node or a ring
 
 **Key files:**
 - [`services/gateway/internal/cache/ring.go`](services/gateway/internal/cache/ring.go) — hash ring implementation
@@ -191,19 +187,19 @@ GET /:code → 301 response (returned immediately)
 
 The analytics worker uses a no-ack-on-error pattern: DB errors exit the process; `restart: on-failure` in Docker Compose requeues unacked messages automatically. The AMQP connection has a background `watchAndReconnect` goroutine for broker restarts.
 
-**Phase 10C — competing consumers:** a single worker cannot drain the queue fast enough under high load. Queue depth grew monotonically to **~600k messages** during a 4-minute throughput test. Scaling to 3 competing consumers brought it to effectively zero.
+**Phase 10C — competing consumers:** a single worker cannot drain the queue fast enough under high load. Grafana dashboard (Analytics Pipeline) shows the contrast clearly.
 
-**Before — 1 worker (queue grows to 600k):**
+**Before — 1 worker:**
 
 ![1 worker — queue grows unboundedly](docs/findings/1_worker.png)
 
-The staircase shape reflects batch flush cycles. At ~5000 req/s the publish rate is ~300k events/min; one worker drains ~2000 events/min — a 150:1 backlog ratio.
+Ready (backlog) climbs to ~4,000; unacked stays ~200 — only one worker's prefetch window in flight. The staircase shape reflects batch flush cycles (100 events or 5s ticker).
 
-**After — 3 workers (queue stays at 0):**
+**After — 3 workers:**
 
 ![3 workers — queue stays near zero](docs/findings/3_workers.png)
 
-Queue depth never exceeded 3 messages. The brief spike to 3 is one message per worker in the prefetch window before the first ack — not a backlog.
+Ready stays ~0 — messages are consumed as fast as they arrive. Unacked rises to ~600 (3 workers × ~200 each, all actively processing batches in parallel). The high unacked count here is healthy: it means messages are in-flight, not queued.
 
 No code change for competing consumers — `docker compose up -d --scale analytics-worker=3` is sufficient. The only code change was upgrading to a **quorum queue** for broker-crash durability:
 
@@ -217,8 +213,8 @@ args := amqp.Table{
 
 | Metric | 1 worker | 3 workers |
 |---|---|---|
-| Peak queue depth | ~600,000 | 3 |
-| Queue at end of test | ~240,000 (growing) | 0 |
+| Peak ready (backlog) | ~4,000 | ~0 |
+| Peak unacked (in-flight) | ~200 | ~600 |
 | Redirect p95 | Unchanged | Unchanged |
 
 **Key files:**
