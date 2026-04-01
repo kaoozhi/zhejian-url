@@ -127,6 +127,7 @@ load-throughput:
 ##   CACHE_NODES=redis-1:6379 docker compose up -d gateway
 load-throughput-single:
 	RATE_LIMITER_ADDR="" AMQP_URL="" CACHE_NODES=redis-1:6379 docker compose up -d gateway
+	docker compose up -d --no-deps prometheus grafana
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
@@ -142,6 +143,7 @@ load-throughput-single:
 ## Starts postgres/migrations/redis-1 in Docker, runs gateway on host, then runs k6.
 load-throughput-single-host:
 	docker compose up -d postgres migrations redis-1
+	docker compose up -d --no-deps prometheus grafana
 	docker compose stop gateway || true
 	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
 	if [ -n "$$existing_pid" ]; then \
@@ -173,6 +175,7 @@ load-throughput-single-host:
 ##   docker compose up -d gateway
 load-throughput-ring:
 	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	docker compose up -d --no-deps prometheus grafana
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
@@ -191,6 +194,7 @@ load-throughput-ring:
 ## Prometheus query: rabbitmq_queue_messages_ready{queue="analytics.clicks"}
 load-throughput-ring-host:
 	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq analytics-worker prometheus
+	docker compose up -d --no-deps grafana
 	docker compose stop gateway || true
 	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
 	if [ -n "$$existing_pid" ]; then \
@@ -227,6 +231,7 @@ load-throughput-ring-host:
 load-queue-1worker:
 	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq
 	docker compose up -d --no-deps prometheus
+	docker compose up -d --no-deps grafana
 	docker compose up -d --no-deps --scale analytics-worker=1 analytics-worker
 	docker compose stop gateway || true
 	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
@@ -262,6 +267,7 @@ load-queue-1worker:
 load-queue-3workers:
 	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq
 	docker compose up -d --no-deps prometheus
+	docker compose up -d --no-deps grafana
 	docker compose up -d --no-deps --scale analytics-worker=3 analytics-worker
 	docker compose stop gateway || true
 	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
@@ -294,6 +300,7 @@ load-queue-3workers:
 ## Phase 11: hot-key stress, single CB (before) — 20 URLs, CB should trip
 load-hotkey-single-cb:
 	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	docker compose up -d --no-deps prometheus grafana
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
@@ -308,6 +315,7 @@ load-hotkey-single-cb:
 ## Phase 11: hot-key stress, per-node CB (after) — same 20-URL load, only hot node trips
 load-hotkey-per-node-cb:
 	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	docker compose up -d --no-deps prometheus grafana
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
