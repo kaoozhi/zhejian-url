@@ -2,11 +2,13 @@
 # Chaos test: Toxiproxy fault injection across all dependencies
 #
 # Usage:
-#   ./scripts/chaos-test.sh [dev|prod] [--no-build] [--scenario N[,N,...] | --all]
-#   ./scripts/chaos-test.sh                     # dev stack, all scenarios
-#   ./scripts/chaos-test.sh prod                # prod stack, all scenarios
-#   ./scripts/chaos-test.sh --scenario 2,3      # dev, scenarios 2 and 3 only
+#   ./scripts/chaos-test.sh [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up]
+#   ./scripts/chaos-test.sh                          # dev stack, all scenarios
+#   ./scripts/chaos-test.sh prod                     # prod stack, all scenarios
+#   ./scripts/chaos-test.sh --scenario 2,3           # dev, scenarios 2 and 3 only
 #   ./scripts/chaos-test.sh prod --no-build --scenario 5
+#   ./scripts/chaos-test.sh --scenario 6 --workers 3 # scenario 6 with 3 analytics workers
+#   ./scripts/chaos-test.sh --keep-up                # keep stack running after test (observe Grafana at :3000)
 #
 # Scenarios:
 #   1.  Rate-limiter latency → CB opens → fail-open, then recovery → 429 enforced
@@ -14,6 +16,8 @@
 #   3.  Redis complete failure (timeout=0) → CB opens → DB fallback
 #   4.  Postgres down → /health returns 503 → restart → /health returns 200
 #   5.  RabbitMQ outage → publisher + consumer resilience (at-least-once delivery)
+#   6.  Analytics worker down → queue builds → worker restart → queue drains
+#   7.  Quorum queue durability — messages survive RabbitMQ SIGKILL (Raft WAL)
 
 set -euo pipefail
 
@@ -21,6 +25,8 @@ set -euo pipefail
 STACK="dev"
 BUILD_FLAG="--build"
 SCENARIOS="all"
+WORKERS=1
+KEEP_UP=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,7 +35,10 @@ while [[ $# -gt 0 ]]; do
     --scenario)   SCENARIOS="$2"; shift 2 ;;
     --scenario=*) SCENARIOS="${1#--scenario=}"; shift ;;
     --all)        SCENARIOS="all"; shift ;;
-    *) echo "Usage: $0 [dev|prod] [--no-build] [--scenario N[,N,...] | --all]"; exit 1 ;;
+    --workers)    WORKERS="$2"; shift 2 ;;
+    --workers=*)  WORKERS="${1#--workers=}"; shift ;;
+    --keep-up)    KEEP_UP=true; shift ;;
+    *) echo "Usage: $0 [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up]"; exit 1 ;;
   esac
 done
 
@@ -65,7 +74,12 @@ cleanup() {
     $TOXIPROXY toxic delete -n latency_downstream "$node" 2>/dev/null || true
     $TOXIPROXY toxic delete -n timeout_downstream "$node" 2>/dev/null || true
   done
-  $COMPOSE down -v 2>/dev/null || true
+  if [ "$KEEP_UP" = "true" ]; then
+    echo "    --keep-up set: stack left running. Grafana: http://localhost:3000"
+    echo "    To tear down: docker compose -f $BASE_COMPOSE -f docker-compose.chaos.yml down -v"
+  else
+    $COMPOSE down -v 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -113,12 +127,37 @@ if [ -z "$CODE" ] || [ "$CODE" = "null" ]; then
 fi
 pass "Created short URL: $CODE"
 
+RABBITMQ_API="http://guest:guest@localhost:15672/api/queues/%2F/analytics.clicks"
+
+# Poll RabbitMQ management API for messages_ready until the value satisfies
+# a condition, or until the timeout expires. Uses the management API directly
+# (real-time) rather than Prometheus (15s scrape lag).
+# Usage: poll_queue_depth <op> <threshold> <timeout_secs>
+# op: "gt" (greater than) or "le" (less than or equal to)
+poll_queue_depth() {
+  local op="$1" threshold="$2" timeout_secs="$3"
+  local elapsed=0 depth="0"
+  while [ "$elapsed" -lt "$timeout_secs" ]; do
+    depth=$(curl -sf "${RABBITMQ_API}" \
+      | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
+    case "$op" in
+      gt) [ "$depth" -gt "$threshold" ] && echo "$depth" && return 0 ;;
+      le) [ "$depth" -le "$threshold" ] && echo "$depth" && return 0 ;;
+    esac
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  echo "$depth"
+  return 1
+}
+
 # ─── Scenario 1: Rate-limiter CB → fail-open, then recovery ──────────────────
 scenario_1() {
   echo ""
   echo "=== Scenario 1a: 500ms latency injection ==="
 
   HEALTH=$(curl -s "$GATEWAY/health")
+  echo $HEALTH
   if echo "$HEALTH" | grep -q '"rate_limiter_cb":"closed"'; then
     pass "Health check reports rate_limiter_cb=closed"
   else
@@ -371,12 +410,170 @@ scenario_5() {
   fi
 }
 
+# ─── Scenario 6: Analytics worker down → queue builds → restart → drains ─────
+scenario_6() {
+  echo ""
+  echo "=== Scenario 6: Analytics worker down → queue builds → restart → drains (workers=$WORKERS) ==="
+
+  # Scale to the requested worker count before the scenario starts.
+  $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+  echo "    Waiting 5s for workers to register consumers..."
+  sleep 5
+
+  # Seed some click traffic so the queue has events in flight.
+  for i in $(seq 1 20); do curl -s -o /dev/null "$GATEWAY/$CODE"; done
+  pass "Scenario 6: seeded 20 click events"
+
+  # Baseline: workers are running, queue should stay near zero.
+  if depth=$(poll_queue_depth le 50 15); then
+    pass "Scenario 6a: queue depth nominal before worker stop (depth=$depth)"
+  else
+    fail "Scenario 6a: queue depth already elevated before test (depth=$depth) — check worker health"
+  fi
+
+  $COMPOSE stop analytics-worker
+  pass "Scenario 6: stopped all $WORKERS analytics-worker instance(s)"
+
+  # Generate sustained traffic while workers are down.
+  for i in $(seq 1 100); do curl -s -o /dev/null "$GATEWAY/$CODE"; done
+  pass "Scenario 6: generated 100 click events with worker stopped"
+
+  # Assert backlog builds (queue depth > 50 within 20s).
+  # Uses RabbitMQ management API directly for real-time depth (no Prometheus scrape lag).
+  if depth=$(poll_queue_depth gt 50 20); then
+    pass "Scenario 6b: queue depth grew as expected (depth=$depth)"
+  else
+    fail "Scenario 6b: queue depth did not grow with worker stopped (depth=$depth)"
+  fi
+
+  # Restart workers (same scale as before) and assert the queue drains within 60s.
+  $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+  pass "Scenario 6: restarted analytics-worker ($WORKERS instance(s))"
+
+  if depth=$(poll_queue_depth le 10 60); then
+    pass "Scenario 6c: queue drained after worker restart (depth=$depth)"
+  else
+    fail "Scenario 6c: queue did not drain within 60s after restart (depth=$depth)"
+  fi
+}
+
+# ─── Scenario 7: Quorum queue durability — SIGKILL RabbitMQ, no data loss ─────
+scenario_7() {
+  echo ""
+  echo "=== Scenario 7: Quorum queue durability — messages survive RabbitMQ SIGKILL ==="
+  echo "    Classic durable queues flush to disk on SIGTERM; quorum queues write to"
+  echo "    the Raft WAL on every publish, so messages survive SIGKILL too."
+
+  # Ensure the quorum queue and its exchange binding exist before stopping the worker.
+  # consumer.Setup() declares the queue on first startup — if we stop before it runs,
+  # the exchange has no binding and silently drops all published messages.
+  $COMPOSE up -d --no-deps analytics-worker
+  echo "    Waiting for analytics-worker to declare the quorum queue..."
+  for i in $(seq 1 15); do
+    if curl -sf "${RABBITMQ_API}" > /dev/null 2>&1; then
+      break
+    fi
+    if [ "$i" -eq 15 ]; then
+      fail "Scenario 7: quorum queue did not appear within 30s — worker may have failed to start"
+      return
+    fi
+    sleep 2
+  done
+
+  $COMPOSE stop analytics-worker
+  # Wait for RabbitMQ to deregister the dead consumer. The analytics-worker uses
+  # the default 60s AMQP heartbeat (not the gateway's 2s), so detection can take
+  # up to 120s if Docker doesn't deliver a TCP RST promptly.
+  echo "    Waiting for RabbitMQ to deregister consumer..."
+  for i in $(seq 1 30); do
+    consumers=$(curl -sf "${RABBITMQ_API}" | jq -r '.consumers // 1' 2>/dev/null || echo "1")
+    if [ "$consumers" -eq 0 ]; then
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      fail "Scenario 7: consumer still registered after 60s (consumers=$consumers)"
+      $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+      return
+    fi
+    sleep 2
+  done
+  pass "Scenario 7: quorum queue ready, stopped analytics-worker (consumer deregistered)"
+
+  # Publish 50 click events and give TCP + Raft WAL time to commit them.
+  for i in $(seq 1 50); do curl -s -o /dev/null "$GATEWAY/$CODE"; done
+  pass "Scenario 7: published 50 click events"
+  echo "    Waiting 3s for gateway to deliver all events to the quorum queue..."
+  sleep 3
+
+  # Record pre-crash depth via management API (real-time).
+  pre_crash=$(curl -sf "${RABBITMQ_API}" | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
+  if [ "$pre_crash" -lt 10 ]; then
+    echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
+    echo "    DEBUG: queue state:"
+    curl -sf "${RABBITMQ_API}" | jq '{messages_ready, messages_unacknowledged, messages, consumers}' 2>/dev/null || echo "    DEBUG: management API query failed"
+    echo "    DEBUG: bindings:"
+    curl -sf "http://guest:guest@localhost:15672/api/queues/%2F/analytics.clicks/bindings" 2>/dev/null | jq '.[].source' || echo "    DEBUG: bindings query failed"
+    fail "Scenario 7a: expected ≥10 messages before crash, got $pre_crash — aborting"
+    $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+    return
+  fi
+  pass "Scenario 7a: pre-crash queue depth = $pre_crash"
+
+  # Hard crash: SIGKILL — no graceful flush, no SIGTERM, no Erlang shutdown hook.
+  # Classic durable queues may lose messages still in memory; quorum queues
+  # survive because each message is fsync'd to the Raft WAL before being ack'd.
+  $COMPOSE kill -s SIGKILL rabbitmq
+  pass "Scenario 7b: sent SIGKILL to RabbitMQ (hard crash)"
+  sleep 2  # ensure the container is fully stopped
+
+  $COMPOSE start rabbitmq
+  pass "Scenario 7b: restarted RabbitMQ"
+  echo "    Waiting for RabbitMQ to recover (quorum queue leader election)..."
+
+  # Poll management API until healthy (up to 30s).
+  for i in $(seq 1 15); do
+    if curl -sf "http://guest:guest@localhost:15672/api/overview" > /dev/null 2>&1; then
+      pass "Scenario 7b: management API healthy (attempt $i)"
+      break
+    fi
+    if [ "$i" -eq 15 ]; then
+      fail "Scenario 7b: RabbitMQ did not recover within 30s"
+      $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+      return
+    fi
+    sleep 2
+  done
+  sleep 3  # extra settle for queue leader election
+
+  # Assert queue depth survived the crash with zero loss.
+  # The 3s settle window above ensures all publishes are committed to the Raft WAL
+  # before the kill — on a single machine this takes milliseconds, not seconds.
+  post_crash=$(curl -sf "${RABBITMQ_API}" | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
+  if [ "$post_crash" -eq "$pre_crash" ]; then
+    pass "Scenario 7c: queue depth after SIGKILL = $post_crash (no data loss) — quorum durability verified"
+  else
+    lost=$(($pre_crash - $post_crash))
+    fail "Scenario 7c: message loss detected — pre=$pre_crash post=$post_crash lost=$lost"
+  fi
+
+  # Drain: restart worker and confirm queue empties.
+  $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+  pass "Scenario 7: restarted analytics-worker ($WORKERS instance(s))"
+  if depth=$(poll_queue_depth le 10 60); then
+    pass "Scenario 7d: queue drained after recovery (depth=$depth)"
+  else
+    fail "Scenario 7d: queue did not drain within 60s (depth=$depth)"
+  fi
+}
+
 # ─── Run selected scenarios ────────────────────────────────────────────────────
 if should_run 1; then scenario_1; fi
 if should_run 2; then scenario_2; fi
 if should_run 3; then scenario_3; fi
 if should_run 4; then scenario_4; fi
 if should_run 5; then scenario_5; fi
+if should_run 6; then scenario_6; fi
+if should_run 7; then scenario_7; fi
 
 # ─── Exit with non-zero status if any assertions failed ───────────────────────
 # (The summary is printed by the cleanup trap so it always appears.)
