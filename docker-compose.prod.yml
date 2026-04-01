@@ -175,10 +175,28 @@ services:
       - "9090:9090"
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./observability/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml
       - prometheus_data:/prometheus
     depends_on:
       gateway:
         condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin  # portfolio — no real traffic, admin access intentional
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
   postgres_data:
@@ -187,3 +205,4 @@ volumes:
   redis_3_data:
   prometheus_data:
   rabbitmq_data:
+  grafana_data:
