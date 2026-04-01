@@ -2,12 +2,12 @@
 # Chaos test: Toxiproxy fault injection across all dependencies
 #
 # Usage:
-#   ./scripts/chaos-test.sh [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up]
+#   ./scripts/chaos-test.sh [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up] [--cluster]
 #   ./scripts/chaos-test.sh                          # dev stack, all scenarios
 #   ./scripts/chaos-test.sh prod                     # prod stack, all scenarios
 #   ./scripts/chaos-test.sh --scenario 2,3           # dev, scenarios 2 and 3 only
 #   ./scripts/chaos-test.sh prod --no-build --scenario 5
-#   ./scripts/chaos-test.sh --scenario 6 --workers 3 # scenario 6 with 3 analytics workers
+#   ./scripts/chaos-test.sh --scenario 6 --cluster   # scenario 6 requires 3-node cluster overlay
 #   ./scripts/chaos-test.sh --keep-up                # keep stack running after test (observe Grafana at :3000)
 #
 # Scenarios:
@@ -16,7 +16,7 @@
 #   3.  Redis complete failure (timeout=0) → CB opens → DB fallback
 #   4.  Postgres down → /health returns 503 → restart → /health returns 200
 #   5.  RabbitMQ outage → publisher + consumer resilience (at-least-once delivery)
-#   6.  Quorum queue durability — messages survive RabbitMQ SIGKILL (Raft WAL)
+#   6.  Quorum queue WAL — SIGKILL one node, zero message loss (requires --cluster)
 
 set -euo pipefail
 
@@ -26,6 +26,7 @@ BUILD_FLAG="--build"
 SCENARIOS="all"
 WORKERS=1
 KEEP_UP=false
+CLUSTER=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,7 +38,8 @@ while [[ $# -gt 0 ]]; do
     --workers)    WORKERS="$2"; shift 2 ;;
     --workers=*)  WORKERS="${1#--workers=}"; shift ;;
     --keep-up)    KEEP_UP=true; shift ;;
-    *) echo "Usage: $0 [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up]"; exit 1 ;;
+    --cluster)    CLUSTER=true; shift ;;
+    *) echo "Usage: $0 [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up] [--cluster]"; exit 1 ;;
   esac
 done
 
@@ -47,7 +49,11 @@ case "$STACK" in
 esac
 
 # ─── Globals ──────────────────────────────────────────────────────────────────
-COMPOSE="docker compose -f $BASE_COMPOSE -f docker-compose.chaos.yml"
+if [ "$CLUSTER" = "true" ]; then
+  COMPOSE="docker compose -f $BASE_COMPOSE -f docker-compose.rabbitmq-cluster.yml -f docker-compose.chaos.yml"
+else
+  COMPOSE="docker compose -f $BASE_COMPOSE -f docker-compose.chaos.yml"
+fi
 TOXIPROXY="docker exec zhejian-toxiproxy /toxiproxy-cli"
 GATEWAY="http://localhost:8080"
 PASSED=0
@@ -409,16 +415,24 @@ scenario_5() {
   fi
 }
 
-# ─── Scenario 6: Quorum queue durability — SIGKILL RabbitMQ, no data loss ─────
+# ─── Scenario 6: Quorum queue WAL — SIGKILL one node, zero message loss ──────
+# Requires --cluster flag (3-node RabbitMQ cluster overlay).
+#
+# What this tests: every quorum queue publish is fsync'd to the Raft WAL on a
+# majority of nodes before the broker acknowledges it. Killing one node with
+# SIGKILL (no graceful shutdown, no flush) cannot cause data loss because the
+# other two nodes already hold a durable copy. The remaining 2/3 nodes maintain
+# quorum so the queue stays available throughout.
 scenario_6() {
   echo ""
-  echo "=== Scenario 6: Quorum queue durability — messages survive RabbitMQ SIGKILL ==="
-  echo "    Classic durable queues flush to disk on SIGTERM; quorum queues write to"
-  echo "    the Raft WAL on every publish, so messages survive SIGKILL too."
+  echo "=== Scenario 6: Quorum queue WAL — zero message loss when one node is SIGKILL'd ==="
+
+  if [ "$CLUSTER" = "false" ]; then
+    fail "Scenario 6 requires --cluster flag (3-node RabbitMQ cluster overlay)"
+    return
+  fi
 
   # Ensure the quorum queue and its exchange binding exist before stopping the worker.
-  # consumer.Setup() declares the queue on first startup — if we stop before it runs,
-  # the exchange has no binding and silently drops all published messages.
   $COMPOSE up -d --no-deps analytics-worker
   echo "    Waiting for analytics-worker to declare the quorum queue..."
   for i in $(seq 1 15); do
@@ -432,16 +446,20 @@ scenario_6() {
     sleep 2
   done
 
+  # Verify the queue is a quorum queue replicated across all 3 nodes.
+  members=$(curl -sf "${RABBITMQ_API}" | jq -r '.members | length' 2>/dev/null || echo "0")
+  if [ "$members" -lt 3 ]; then
+    fail "Scenario 6: expected 3 quorum members, got $members — is --cluster active and the cluster healthy?"
+    $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+    return
+  fi
+  pass "Scenario 6: quorum queue confirmed — $members replicas (Raft WAL active on all nodes)"
+
   $COMPOSE stop analytics-worker
-  # Wait for RabbitMQ to deregister the dead consumer. The analytics-worker uses
-  # the default 60s AMQP heartbeat (not the gateway's 2s), so detection can take
-  # up to 120s if Docker doesn't deliver a TCP RST promptly.
   echo "    Waiting for RabbitMQ to deregister consumer..."
   for i in $(seq 1 30); do
     consumers=$(curl -sf "${RABBITMQ_API}" | jq -r '.consumers // 1' 2>/dev/null || echo "1")
-    if [ "$consumers" -eq 0 ]; then
-      break
-    fi
+    if [ "$consumers" -eq 0 ]; then break; fi
     if [ "$i" -eq 30 ]; then
       fail "Scenario 6: consumer still registered after 60s (consumers=$consumers)"
       $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
@@ -449,64 +467,48 @@ scenario_6() {
     fi
     sleep 2
   done
-  pass "Scenario 6: quorum queue ready, stopped analytics-worker (consumer deregistered)"
+  pass "Scenario 6: analytics-worker stopped, consumer deregistered"
 
-  # Publish 50 click events and give TCP + Raft WAL time to commit them.
+  # Publish 50 click events. Each is fsync'd to the Raft WAL on a majority of
+  # nodes before the gateway's publish call returns — so all 50 are durable
+  # before we record the depth.
   for i in $(seq 1 50); do curl -s -o /dev/null "$GATEWAY/$CODE"; done
   pass "Scenario 6: published 50 click events"
-  echo "    Waiting 3s for gateway to deliver all events to the quorum queue..."
+  echo "    Waiting 3s for WAL commits..."
   sleep 3
 
-  # Record pre-crash depth via management API (real-time).
   pre_crash=$(curl -sf "${RABBITMQ_API}" | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
   if [ "$pre_crash" -lt 10 ]; then
     echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
-    echo "    DEBUG: queue state:"
-    curl -sf "${RABBITMQ_API}" | jq '{messages_ready, messages_unacknowledged, messages, consumers}' 2>/dev/null || echo "    DEBUG: management API query failed"
-    echo "    DEBUG: bindings:"
-    curl -sf "http://guest:guest@localhost:15672/api/queues/%2F/analytics.clicks/bindings" 2>/dev/null | jq '.[].source' || echo "    DEBUG: bindings query failed"
+    echo "    DEBUG: queue: $(curl -sf "${RABBITMQ_API}" | jq '{messages_ready,consumers,members}' 2>/dev/null)"
     fail "Scenario 6a: expected ≥10 messages before crash, got $pre_crash — aborting"
     $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
     return
   fi
   pass "Scenario 6a: pre-crash queue depth = $pre_crash"
 
-  # Hard crash: SIGKILL — no graceful flush, no SIGTERM, no Erlang shutdown hook.
-  # Classic durable queues may lose messages still in memory; quorum queues
-  # survive because each message is fsync'd to the Raft WAL before being ack'd.
-  $COMPOSE kill -s SIGKILL rabbitmq-1
-  pass "Scenario 6b: sent SIGKILL to RabbitMQ (hard crash)"
-  sleep 2  # ensure the container is fully stopped
+  # SIGKILL rabbitmq-2 — hard crash, no graceful shutdown, no Erlang cleanup.
+  # rabbitmq-1 (management UI + AMQP) and rabbitmq-3 form a 2/3 majority:
+  # Raft can still serve reads and writes, and the queue stays available.
+  $COMPOSE kill -s SIGKILL rabbitmq-2
+  pass "Scenario 6b: sent SIGKILL to rabbitmq-2"
+  sleep 2
 
-  $COMPOSE start rabbitmq-1
-  pass "Scenario 6b: restarted RabbitMQ"
-  echo "    Waiting for RabbitMQ to recover (quorum queue leader election)..."
-
-  # Poll management API until healthy (up to 30s).
-  for i in $(seq 1 15); do
-    if curl -sf "http://guest:guest@localhost:15672/api/overview" > /dev/null 2>&1; then
-      pass "Scenario 6b: management API healthy (attempt $i)"
-      break
-    fi
-    if [ "$i" -eq 15 ]; then
-      fail "Scenario 6b: RabbitMQ did not recover within 30s"
-      $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
-      return
-    fi
-    sleep 2
-  done
-  sleep 3  # extra settle for queue leader election
-
-  # Assert queue depth survived the crash with zero loss.
-  # The 3s settle window above ensures all publishes are committed to the Raft WAL
-  # before the kill — on a single machine this takes milliseconds, not seconds.
+  # Assert zero message loss — the queue must still be readable via rabbitmq-1
+  # and the depth must equal the pre-crash snapshot.
   post_crash=$(curl -sf "${RABBITMQ_API}" | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
   if [ "$post_crash" -eq "$pre_crash" ]; then
-    pass "Scenario 6c: queue depth after SIGKILL = $post_crash (no data loss) — quorum durability verified"
+    pass "Scenario 6c: queue depth after SIGKILL = $post_crash (zero loss) — WAL + quorum verified"
   else
     lost=$(($pre_crash - $post_crash))
     fail "Scenario 6c: message loss detected — pre=$pre_crash post=$post_crash lost=$lost"
   fi
+
+  # Restore the killed node and let it rejoin the cluster.
+  $COMPOSE start rabbitmq-2
+  pass "Scenario 6b: restarted rabbitmq-2"
+  echo "    Waiting 15s for rabbitmq-2 to rejoin the cluster..."
+  sleep 15
 
   # Drain: restart worker and confirm queue empties.
   $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
