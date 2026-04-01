@@ -13,7 +13,9 @@
 
 services:
   # Override rabbitmq-1 to add hostname, cookie, and cluster config mount.
-  # All other settings (image, ports, healthcheck) are inherited from the base.
+  # All other settings (image, ports) are inherited from the base.
+  # Healthcheck uses check_port_connectivity (overrides base ping) — ensures AMQP
+  # port 5672 is bound and cluster formation is complete before gateway starts.
   rabbitmq-1:
     hostname: rabbitmq-1
     environment:
@@ -21,6 +23,12 @@ services:
     volumes:
       - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/cluster.conf:ro
       - rabbitmq_1_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   rabbitmq-2:
     image: rabbitmq:4-management-alpine
@@ -31,10 +39,11 @@ services:
       - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/cluster.conf:ro
       - rabbitmq_2_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   rabbitmq-3:
     image: rabbitmq:4-management-alpine
@@ -45,10 +54,11 @@ services:
       - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/cluster.conf:ro
       - rabbitmq_3_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   # Extend the gateway's depends_on to wait for all cluster members.
   # Compose merges this with the base depends_on (which already waits for rabbitmq-1).
