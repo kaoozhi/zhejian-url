@@ -121,24 +121,58 @@ for i in $(seq 1 10); do
 done
 pass "toxiproxy CLI reachable"
 
-# ─── Create a test short URL for redirect scenarios ───────────────────────────
-echo "=== Creating test short URL ==="
-CODE=$(curl -sf -X POST -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com/chaos-test"}' \
-  "$GATEWAY/api/v1/shorten" | jq -r .short_code)
-if [ -z "$CODE" ] || [ "$CODE" = "null" ]; then
-  fail "Could not create test short URL"
-  exit 1
-fi
-pass "Created short URL: $CODE"
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+reset_toxics() {
+  $TOXIPROXY toxic delete -n latency_downstream rate-limiter 2>/dev/null || true
+  for node in redis-1 redis-2 redis-3 postgres; do
+    $TOXIPROXY toxic delete -n latency_downstream "$node" 2>/dev/null || true
+    $TOXIPROXY toxic delete -n timeout_downstream "$node" 2>/dev/null || true
+  done
+}
+
+create_test_url() {
+  local code
+  code=$(curl -sf -X POST -H 'Content-Type: application/json' \
+    -d "{\"url\":\"https://example.com/chaos-test-$RANDOM\"}" \
+    "$GATEWAY/api/v1/shorten" | jq -r .short_code)
+  if [ -z "$code" ] || [ "$code" = "null" ]; then
+    echo "ERROR"
+    return 1
+  fi
+  echo "$code"
+}
+
+wait_for_cb_state() {
+  local cb_name="$1" expected_state="$2" timeout_secs="$3" count=0
+  echo "    Waiting up to ${timeout_secs}s for ${cb_name} to become ${expected_state}..."
+  while [ "$count" -lt "$timeout_secs" ]; do
+    if curl -s "$GATEWAY/health" | grep -q "\"${cb_name}\":\"${expected_state}\""; then
+      pass "${cb_name} is ${expected_state} (took ${count}s)"
+      return 0
+    fi
+    sleep 1
+    count=$((count + 1))
+  done
+  fail "${cb_name} did not reach ${expected_state} within ${timeout_secs}s"
+  return 1
+}
+
+wait_for_health() {
+  local timeout_secs="$1" count=0
+  echo "    Waiting up to ${timeout_secs}s for gateway health=200..."
+  while [ "$count" -lt "$timeout_secs" ]; do
+    if [ "$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")" = "200" ]; then
+      pass "Gateway healthy (took ${count}s)"
+      return 0
+    fi
+    sleep 1
+    count=$((count + 1))
+  done
+  fail "Gateway did not become healthy within ${timeout_secs}s"
+  return 1
+}
 
 RABBITMQ_API="http://guest:guest@localhost:15672/api/queues/%2F/analytics.clicks"
-
-# Poll RabbitMQ management API for messages_ready until the value satisfies
-# a condition, or until the timeout expires. Uses the management API directly
-# (real-time) rather than Prometheus (15s scrape lag).
-# Usage: poll_queue_depth <op> <threshold> <timeout_secs>
-# op: "gt" (greater than) or "le" (less than or equal to)
 poll_queue_depth() {
   local op="$1" threshold="$2" timeout_secs="$3"
   local elapsed=0 depth="0"
@@ -201,8 +235,7 @@ scenario_1() {
   $TOXIPROXY toxic delete -n latency_downstream rate-limiter
   pass "Removed latency toxic"
 
-  echo "    Waiting 32s for circuit breaker to recover (half-open → closed)..."
-  sleep 32
+  wait_for_cb_state "rate_limiter_cb" "closed" 45
 
   # After recovery the token bucket was never decremented during the chaos window
   # (fail-open bypasses Redis). So burst=50 tokens are available. Fire 60 rapid
@@ -221,15 +254,14 @@ scenario_1() {
 
 # ─── Scenario 2: Redis slow → CB opens → DB fallback ─────────────────────────
 scenario_2() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
   echo ""
   echo "=== Scenario 2: Redis +200ms latency → CB opens → DB fallback ==="
 
-  # If Scenario 1 ran immediately before this, it exhausted the rate-limit token
-  # bucket (burst=50, rate=100/min ≈ 1.67 tokens/s). Wait for it to fully refill.
-  if should_run 1; then
-    echo "    Waiting 30s for rate-limit token bucket to refill after Scenario 1..."
-    sleep 30
-  fi
+  # Isolate state: instantly wipe token bucket to unblock rate-limiter
+  $COMPOSE exec -T redis-1 redis-cli FLUSHALL >/dev/null
 
   for node in redis-1 redis-2 redis-3; do
     $TOXIPROXY toxic add -t latency -a latency=200 "$node"
@@ -263,8 +295,7 @@ scenario_2() {
     $TOXIPROXY toxic delete -n latency_downstream "$node"
   done
   pass "Scenario 2: removed Redis latency toxic"
-  echo "    Waiting 32s for circuit breaker to recover..."
-  sleep 32
+  wait_for_cb_state "cache_cb" "half-open" 45
   # After 30 s (CB Timeout), the breaker transitions Open → HalfOpen.
   # It stays HalfOpen until MaxRequests=3 successful cacheCB.Execute() calls
   # arrive.  A single redirect with a cache miss exercises exactly 3 Execute
@@ -279,6 +310,9 @@ scenario_2() {
 
 # ─── Scenario 3: Redis down → CB opens → DB fallback ─────────────────────────
 scenario_3() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
   echo ""
   echo "=== Scenario 3: Redis complete failure → CB opens → DB fallback ==="
 
@@ -301,12 +335,12 @@ scenario_3() {
     $TOXIPROXY toxic delete -n timeout_downstream "$node"
   done
   pass "Scenario 3: restored Redis"
-  echo "    Waiting 32s for circuit breaker to recover..."
-  sleep 32
+  wait_for_cb_state "cache_cb" "half-open" 45
 }
 
 # ─── Scenario 4: Postgres down → health 503 → recovery ───────────────────────
 scenario_4() {
+  reset_toxics
   echo ""
   echo "=== Scenario 4: Postgres down → /health returns 503 → recovery ==="
 
@@ -326,19 +360,15 @@ scenario_4() {
 
   $COMPOSE start postgres
   pass "Scenario 4: restarted Postgres"
-  echo "    Waiting 10s for connection pool to reconnect..."
-  sleep 10
-
-  HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")
-  if [ "$HEALTH_CODE" = "200" ]; then
-    pass "Scenario 4: /health returns 200 after Postgres recovery"
-  else
-    fail "Scenario 4: /health returned $HEALTH_CODE after recovery, expected 200"
-  fi
+  wait_for_health 20
+  pass "Scenario 4: /health returns 200 after Postgres recovery"
 }
 
 # ─── Scenario 5: RabbitMQ outage resilience ───────────────────────────────────
 scenario_5() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
   echo ""
   echo "=== Scenario 5: RabbitMQ outage resilience (publisher + consumer) ==="
 
@@ -431,6 +461,9 @@ scenario_5() {
 # other two nodes already hold a durable copy. The remaining 2/3 nodes maintain
 # quorum so the queue stays available throughout.
 scenario_6() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
   echo ""
   echo "=== Scenario 6: Quorum queue WAL — zero message loss when one node is SIGKILL'd ==="
 
