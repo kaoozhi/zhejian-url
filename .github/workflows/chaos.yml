@@ -40,9 +40,9 @@ jobs:
       - name: Run chaos test
         run: |
           chmod +x scripts/chaos-test.sh
-          ./scripts/chaos-test.sh prod
+          ./scripts/chaos-test.sh prod --cluster
 
       - name: Dump logs on failure
         if: failure()
         run: |
-          docker compose -f docker-compose.prod.yml -f docker-compose.chaos.yml logs --tail=150
+          docker compose -f docker-compose.prod.yml -f docker-compose.rabbitmq-cluster.yml -f docker-compose.chaos.yml logs --tail=150
