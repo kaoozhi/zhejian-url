@@ -148,6 +148,7 @@ poll_queue_depth() {
     case "$op" in
       gt) [ "$depth" -gt "$threshold" ] && echo "$depth" && return 0 ;;
       le) [ "$depth" -le "$threshold" ] && echo "$depth" && return 0 ;;
+      eq) [ "$depth" -eq "$threshold" ] && echo "$depth" && return 0 ;;
     esac
     sleep 2
     elapsed=$((elapsed + 2))
@@ -341,6 +342,12 @@ scenario_5() {
   echo ""
   echo "=== Scenario 5: RabbitMQ outage resilience (publisher + consumer) ==="
 
+  # Restart analytics-worker to align the 5s flush ticker predictably.
+  # This guarantees the click event isn't flushed immediately if a previous
+  # scenario left the ticker close to firing.
+  $COMPOSE restart analytics-worker
+  sleep 3
+
   # Fire a click event before the outage so it lands in the consumer's unacked batch.
   # FLUSH_INTERVAL defaults to 5s; stopping within that window leaves the message
   # unacked → RabbitMQ requeues it automatically when the connection closes.
@@ -469,35 +476,46 @@ scenario_6() {
   done
   pass "Scenario 6: analytics-worker stopped, consumer deregistered"
 
-  # Publish 50 click events. Each is fsync'd to the Raft WAL on a majority of
-  # nodes before the gateway's publish call returns — so all 50 are durable
-  # before we record the depth.
-  for i in $(seq 1 50); do curl -s -o /dev/null "$GATEWAY/$CODE"; done
-  pass "Scenario 6: published 50 click events"
-  echo "    Waiting 3s for WAL commits..."
-  sleep 3
+  # Publish 50 click events. Verify each redirect returned 301 so we know the
+  # gateway accepted them (not silently failing due to a connection issue).
+  published=0
+  for i in $(seq 1 50); do
+    code_status=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/$CODE")
+    if [ "$code_status" = "301" ]; then
+      published=$((published + 1))
+    fi
+  done
+  if [ "$published" -ge 10 ]; then
+    pass "Scenario 6: published $published/50 click events (gateway accepted)"
+  else
+    echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
+    fail "Scenario 6: only $published/50 redirects returned 301 — gateway may be unhealthy"
+    $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+    return
+  fi
 
-  pre_crash=$(curl -sf "${RABBITMQ_API}" | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
-  if [ "$pre_crash" -lt 10 ]; then
+  # Poll for messages_ready instead of a fixed sleep — goroutines publishing to
+  # RabbitMQ are fire-and-forget so they may land slightly after the curl loop.
+  if pre_crash=$(poll_queue_depth gt 9 30); then
+    pass "Scenario 6a: pre-crash queue depth = $pre_crash"
+  else
     echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
     echo "    DEBUG: queue: $(curl -sf "${RABBITMQ_API}" | jq '{messages_ready,consumers,members}' 2>/dev/null)"
     fail "Scenario 6a: expected ≥10 messages before crash, got $pre_crash — aborting"
     $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
     return
   fi
-  pass "Scenario 6a: pre-crash queue depth = $pre_crash"
 
   # SIGKILL rabbitmq-2 — hard crash, no graceful shutdown, no Erlang cleanup.
   # rabbitmq-1 (management UI + AMQP) and rabbitmq-3 form a 2/3 majority:
   # Raft can still serve reads and writes, and the queue stays available.
   $COMPOSE kill -s SIGKILL rabbitmq-2
   pass "Scenario 6b: sent SIGKILL to rabbitmq-2"
-  sleep 2
 
   # Assert zero message loss — the queue must still be readable via rabbitmq-1
-  # and the depth must equal the pre-crash snapshot.
-  post_crash=$(curl -sf "${RABBITMQ_API}" | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
-  if [ "$post_crash" -eq "$pre_crash" ]; then
+  # and the depth must equal the pre-crash snapshot. Wait up to 15s for the
+  # quorum queue to elect a new leader.
+  if post_crash=$(poll_queue_depth eq "$pre_crash" 15); then
     pass "Scenario 6c: queue depth after SIGKILL = $post_crash (zero loss) — WAL + quorum verified"
   else
     lost=$(($pre_crash - $post_crash))
