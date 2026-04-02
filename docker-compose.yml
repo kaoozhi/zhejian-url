@@ -110,7 +110,7 @@ services:
       RATE_LIMITER_ADDR: ${RATE_LIMITER_ADDR-rate-limiter:50051}
       RATE_LIMITER_TIMEOUT: ${RATE_LIMITER_TIMEOUT:-100ms}
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
-      AMQP_URL: ${AMQP_URL-amqp://guest:guest@rabbitmq:5672/}
+      AMQP_URL: ${AMQP_URL-amqp://guest:guest@rabbitmq-1:5672/}
     ports:
       - "8080:8080"
     depends_on:
@@ -128,7 +128,7 @@ services:
         condition: service_started
       jaeger:
         condition: service_started
-      rabbitmq:
+      rabbitmq-1:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
@@ -137,7 +137,7 @@ services:
       retries: 3
 
   # RabbitMQ - Message broker
-  rabbitmq:
+  rabbitmq-1:
     image: rabbitmq:4-management-alpine
     command: sh -c "rabbitmq-plugins enable rabbitmq_prometheus && exec rabbitmq-server"
     ports:
@@ -145,12 +145,13 @@ services:
       - "15672:15672"
       - "15692:15692" # Prometheus metrics
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq_1_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 10
+      start_period: 20s
 
   # Analytics Worker
   analytics-worker:
@@ -162,9 +163,9 @@ services:
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     env_file: .env
     environment:
-      AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      AMQP_URL: amqp://guest:guest@rabbitmq-1:5672/
     depends_on:
-      rabbitmq:
+      rabbitmq-1:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -220,5 +221,5 @@ volumes:
   redis_2_data:
   redis_3_data:
   prometheus_data:
-  rabbitmq_data:
+  rabbitmq_1_data:
   grafana_data:

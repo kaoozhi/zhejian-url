@@ -74,7 +74,7 @@ services:
   gateway:
     environment:
       - RATE_LIMITER_ADDR=toxiproxy:50052
-      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
+      - AMQP_URL=amqp://guest:guest@rabbitmq-1:5672/
       - CACHE_NODES=toxiproxy:6382,toxiproxy:6383,toxiproxy:6384
       # Tighten Redis timeouts so latency injection (200ms) reliably exceeds
       # the client deadline and triggers the circuit breaker.

@@ -268,17 +268,26 @@ func (h *Handler) redirect(c *gin.Context) {
 		return
 	}
 
+	// Capture Gin-specific values before the handler returns: gin.Context is recycled
+	// by Gin's sync.Pool after ServeHTTP returns, so reading them inside the goroutine
+	// could return data from a different concurrent request.
+	ip := c.ClientIP()
+	referer := c.GetHeader("Referer")
+
 	// Perform HTTP 301 redirect to original URL
 	c.Redirect(http.StatusMovedPermanently, url)
 
 	// Publish click event after responding — fire-and-forget in a goroutine
 	// so it never adds latency to the redirect response.
-	// Referer is the page the user came from (HTTP Referer header), not the destination URL.
-	go h.publisher.Publish(ctx, analytics.ClickEvent{
+	// Uses context.Background() because the request context (ctx) is cancelled by
+	// Go's HTTP server when ServeHTTP returns, before this goroutine is scheduled.
+	// amqp091.PublishWithContext checks ctx.Err() first — a cancelled context would
+	// silently drop every event.
+	go h.publisher.Publish(context.Background(), analytics.ClickEvent{
 		ShortCode: code,
 		ClickedAt: time.Now().UTC(),
-		IP:        c.ClientIP(),
-		Referer:   c.GetHeader("Referer"),
+		IP:        ip,
+		Referer:   referer,
 	})
 }
 

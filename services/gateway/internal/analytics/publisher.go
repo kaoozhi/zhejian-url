@@ -115,7 +115,7 @@ func (p *Publisher) Publish(ctx context.Context, event ClickEvent) {
 		return
 	}
 
-	if err := p.channel.PublishWithContext(ctx,
+	if err := ch.PublishWithContext(ctx,
 		exchangeName,
 		routingKey,
 		false, // mandatory

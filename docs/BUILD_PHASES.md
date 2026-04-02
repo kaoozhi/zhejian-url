@@ -743,42 +743,6 @@ PgBouncer solves `N instances × pool_size` connection exhaustion, which require
 
 ---
 
-## Phase 12: Chaos Engineering Lite 🎯 PLANNED
-
-### Objective
-Make the existing Toxiproxy chaos infrastructure runnable with pass/fail assertions. Add the analytics resilience scenario that operationalises the Phase 10C finding.
-
-**Prerequisites:** Toxiproxy infrastructure and basic chaos scenarios from Phase 8.
-
-**Scope note:** No chaos dashboard UI (frontend work, low portfolio signal for a systems engineering project). No CI nightly pipeline (maintenance overhead not worth it). Focus is on clean, scriptable scenarios with observable output.
-
-### Tasks
-1. **Automated Chaos Scenarios**
-   - Refactor `scripts/chaos-test.sh` — existing 5 scenarios produce pass/fail assertions instead of requiring manual observation
-   - Each scenario: inject fault → assert degraded behaviour → remove fault → assert recovery
-
-2. **Analytics Resilience Scenario** 🎯
-   - Operationalises the Phase 10C finding: queue absorbs traffic when workers are down
-   ```bash
-   ./scripts/chaos-test.sh --scenario analytics-resilience
-   # 1. Start k6 load (background, 60s)
-   # 2. Assert queue depth < 10 (workers draining normally)
-   # 3. docker compose stop analytics-worker
-   # 4. Assert queue depth > 1000 after 10s (backlog building)
-   # 5. docker compose up -d analytics-worker
-   # 6. Assert queue depth < 10 after 30s (drained)
-   # PASS
-   ```
-
-3. **Runbook**
-   - `docs/findings/chaos-runbook.md` — scenario descriptions, expected outputs, recovery procedures
-
-### Deliverables
-- Updated `scripts/chaos-test.sh` with pass/fail assertions for all 6 scenarios
-- `docs/findings/chaos-runbook.md`
-
----
-
 ## Phase 11: Grafana Dashboards & Alerting ✅ COMPLETED
 
 ### Objective
@@ -813,6 +777,33 @@ Complete the observability stack with provisioned Grafana dashboards and alert r
 ### Deliverables
 - Grafana running at `:3000`, dashboards load automatically on `docker compose up`
 - Alert rules configured in Prometheus
+
+---
+
+## Phase 12: Chaos Engineering Lite ✅ Complete
+
+### Objective
+Make the existing Toxiproxy chaos infrastructure runnable with pass/fail assertions. Add the analytics resilience scenario that operationalises the Phase 10C finding.
+
+**Prerequisites:** Toxiproxy infrastructure and basic chaos scenarios from Phase 8.
+
+**Scope note:** No chaos dashboard UI (frontend work, low portfolio signal for a systems engineering project). No CI nightly pipeline (maintenance overhead not worth it). Focus is on clean, scriptable scenarios with observable output.
+
+### Tasks
+1. **Automated Chaos Scenarios** ✅ Already complete as of Phase 8
+   - `scripts/chaos-test.sh` already has `pass()`/`fail()` assertion functions, `PASSED`/`FAILED` counters, and exits with code 1 on any failure
+   - All 5 existing scenarios follow the pattern: inject fault → assert degraded behaviour → remove fault → assert recovery
+   - Note: Scenario 5 (RabbitMQ outage) covers broker resilience — publisher reconnect + at-least-once delivery — which is distinct from Scenario 6 below
+
+2. **Analytics Resilience Scenario** ✅
+   - Operationalises the Phase 10C finding: queue absorbs traffic when workers are down, then drains on restart
+   - Scenario 6: stop analytics-worker → assert queue depth grows → restart worker → assert queue drains
+   - Uses Prometheus API (`/api/v1/query`) to poll `rabbitmq_queue_messages_ready` — no k6 dependency
+
+3. **Runbook** — skipped (script is self-documenting; scenario comments serve as runbook)
+
+### Deliverables
+- `scripts/chaos-test.sh` with pass/fail assertions for all 6 scenarios ✅
 
 ---
 

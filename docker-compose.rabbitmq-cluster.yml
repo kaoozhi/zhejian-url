@@ -1,0 +1,75 @@
+# RabbitMQ 3-node cluster overlay
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.rabbitmq-cluster.yml up -d
+#
+# Cluster formation: rabbit_peer_discovery_classic_config (static node list in conf.d/cluster.conf)
+# Node names:  rabbit@rabbitmq-1  rabbit@rabbitmq-2  rabbit@rabbitmq-3
+# Port exposure: rabbitmq-1 only (5672, 15672, 15692) — same as single-node dev
+# Erlang cookie: shared via RABBITMQ_ERLANG_COOKIE env var
+#
+# To tear down (required before re-declaring queue with a different type):
+#   docker compose -f docker-compose.yml -f docker-compose.rabbitmq-cluster.yml down -v
+
+services:
+  # Override rabbitmq-1 to add hostname, cookie, and cluster config mount.
+  # All other settings (image, ports) are inherited from the base.
+  # Healthcheck uses check_port_connectivity (overrides base ping) — ensures AMQP
+  # port 5672 is bound and cluster formation is complete before gateway starts.
+  rabbitmq-1:
+    hostname: rabbitmq-1
+    environment:
+      RABBITMQ_ERLANG_COOKIE: ZHEJIAN_CLUSTER_COOKIE
+    volumes:
+      - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/cluster.conf:ro
+      - rabbitmq_1_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  rabbitmq-2:
+    image: rabbitmq:4-management-alpine
+    hostname: rabbitmq-2
+    environment:
+      RABBITMQ_ERLANG_COOKIE: ZHEJIAN_CLUSTER_COOKIE
+    volumes:
+      - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/cluster.conf:ro
+      - rabbitmq_2_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  rabbitmq-3:
+    image: rabbitmq:4-management-alpine
+    hostname: rabbitmq-3
+    environment:
+      RABBITMQ_ERLANG_COOKIE: ZHEJIAN_CLUSTER_COOKIE
+    volumes:
+      - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/cluster.conf:ro
+      - rabbitmq_3_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # Extend the gateway's depends_on to wait for all cluster members.
+  # Compose merges this with the base depends_on (which already waits for rabbitmq-1).
+  gateway:
+    depends_on:
+      rabbitmq-2:
+        condition: service_healthy
+      rabbitmq-3:
+        condition: service_healthy
+
+volumes:
+  rabbitmq_1_data:
+  rabbitmq_2_data:
+  rabbitmq_3_data:

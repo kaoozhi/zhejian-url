@@ -2,11 +2,13 @@
 # Chaos test: Toxiproxy fault injection across all dependencies
 #
 # Usage:
-#   ./scripts/chaos-test.sh [dev|prod] [--no-build] [--scenario N[,N,...] | --all]
-#   ./scripts/chaos-test.sh                     # dev stack, all scenarios
-#   ./scripts/chaos-test.sh prod                # prod stack, all scenarios
-#   ./scripts/chaos-test.sh --scenario 2,3      # dev, scenarios 2 and 3 only
+#   ./scripts/chaos-test.sh [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up] [--cluster]
+#   ./scripts/chaos-test.sh                          # dev stack, all scenarios
+#   ./scripts/chaos-test.sh prod                     # prod stack, all scenarios
+#   ./scripts/chaos-test.sh --scenario 2,3           # dev, scenarios 2 and 3 only
 #   ./scripts/chaos-test.sh prod --no-build --scenario 5
+#   ./scripts/chaos-test.sh --scenario 6 --cluster   # scenario 6 requires 3-node cluster overlay
+#   ./scripts/chaos-test.sh --keep-up                # keep stack running after test (observe Grafana at :3000)
 #
 # Scenarios:
 #   1.  Rate-limiter latency → CB opens → fail-open, then recovery → 429 enforced
@@ -14,6 +16,7 @@
 #   3.  Redis complete failure (timeout=0) → CB opens → DB fallback
 #   4.  Postgres down → /health returns 503 → restart → /health returns 200
 #   5.  RabbitMQ outage → publisher + consumer resilience (at-least-once delivery)
+#   6.  Quorum queue WAL — SIGKILL one node, zero message loss (requires --cluster)
 
 set -euo pipefail
 
@@ -21,6 +24,9 @@ set -euo pipefail
 STACK="dev"
 BUILD_FLAG="--build"
 SCENARIOS="all"
+WORKERS=1
+KEEP_UP=false
+CLUSTER=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,7 +35,11 @@ while [[ $# -gt 0 ]]; do
     --scenario)   SCENARIOS="$2"; shift 2 ;;
     --scenario=*) SCENARIOS="${1#--scenario=}"; shift ;;
     --all)        SCENARIOS="all"; shift ;;
-    *) echo "Usage: $0 [dev|prod] [--no-build] [--scenario N[,N,...] | --all]"; exit 1 ;;
+    --workers)    WORKERS="$2"; shift 2 ;;
+    --workers=*)  WORKERS="${1#--workers=}"; shift ;;
+    --keep-up)    KEEP_UP=true; shift ;;
+    --cluster)    CLUSTER=true; shift ;;
+    *) echo "Usage: $0 [dev|prod] [--no-build] [--scenario N[,N,...] | --all] [--workers N] [--keep-up] [--cluster]"; exit 1 ;;
   esac
 done
 
@@ -39,7 +49,11 @@ case "$STACK" in
 esac
 
 # ─── Globals ──────────────────────────────────────────────────────────────────
-COMPOSE="docker compose -f $BASE_COMPOSE -f docker-compose.chaos.yml"
+if [ "$CLUSTER" = "true" ]; then
+  COMPOSE="docker compose -f $BASE_COMPOSE -f docker-compose.rabbitmq-cluster.yml -f docker-compose.chaos.yml"
+else
+  COMPOSE="docker compose -f $BASE_COMPOSE -f docker-compose.chaos.yml"
+fi
 TOXIPROXY="docker exec zhejian-toxiproxy /toxiproxy-cli"
 GATEWAY="http://localhost:8080"
 PASSED=0
@@ -65,7 +79,12 @@ cleanup() {
     $TOXIPROXY toxic delete -n latency_downstream "$node" 2>/dev/null || true
     $TOXIPROXY toxic delete -n timeout_downstream "$node" 2>/dev/null || true
   done
-  $COMPOSE down -v 2>/dev/null || true
+  if [ "$KEEP_UP" = "true" ]; then
+    echo "    --keep-up set: stack left running. Grafana: http://localhost:3000"
+    echo "    To tear down: docker compose -f $BASE_COMPOSE -f docker-compose.chaos.yml down -v"
+  else
+    $COMPOSE down -v 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -102,16 +121,88 @@ for i in $(seq 1 10); do
 done
 pass "toxiproxy CLI reachable"
 
-# ─── Create a test short URL for redirect scenarios ───────────────────────────
-echo "=== Creating test short URL ==="
-CODE=$(curl -sf -X POST -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com/chaos-test"}' \
-  "$GATEWAY/api/v1/shorten" | jq -r .short_code)
-if [ -z "$CODE" ] || [ "$CODE" = "null" ]; then
-  fail "Could not create test short URL"
-  exit 1
-fi
-pass "Created short URL: $CODE"
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+reset_toxics() {
+  $TOXIPROXY toxic delete -n latency_downstream rate-limiter 2>/dev/null || true
+  for node in redis-1 redis-2 redis-3 postgres; do
+    $TOXIPROXY toxic delete -n latency_downstream "$node" 2>/dev/null || true
+    $TOXIPROXY toxic delete -n timeout_downstream "$node" 2>/dev/null || true
+  done
+  # Reset rate-limiter token bucket to ensure fresh state
+  $COMPOSE exec -T redis-1 redis-cli FLUSHALL >/dev/null 2>&1 || true
+}
+
+create_test_url() {
+  local code out
+  local retries=5
+  while [ "$retries" -gt 0 ]; do
+    out=$(curl -s -X POST -H 'Content-Type: application/json' \
+      -d "{\"url\":\"https://example.com/chaos-test-$RANDOM\"}" \
+      "$GATEWAY/api/v1/shorten" || true)
+
+    code=$(echo "$out" | jq -r .short_code 2>/dev/null || echo "null")
+    if [ -n "$code" ] && [ "$code" != "null" ]; then
+      echo "$code"
+      return 0
+    fi
+
+    # Wait and retry, tokens might need to replenish
+    sleep 2
+    retries=$((retries - 1))
+  done
+
+  echo >&2 "Failed to create test URL! Last response: $out"
+  return 1
+}
+
+wait_for_cb_state() {
+  local cb_name="$1" expected_state="$2" timeout_secs="$3" count=0
+  echo "    Waiting up to ${timeout_secs}s for ${cb_name} to become ${expected_state}..."
+  while [ "$count" -lt "$timeout_secs" ]; do
+    if curl -s "$GATEWAY/health" | grep -q "\"${cb_name}\":\"${expected_state}\""; then
+      pass "${cb_name} is ${expected_state} (took ${count}s)"
+      return 0
+    fi
+    sleep 1
+    count=$((count + 1))
+  done
+  fail "${cb_name} did not reach ${expected_state} within ${timeout_secs}s"
+  return 1
+}
+
+wait_for_health() {
+  local timeout_secs="$1" count=0
+  echo "    Waiting up to ${timeout_secs}s for gateway health=200..."
+  while [ "$count" -lt "$timeout_secs" ]; do
+    if [ "$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")" = "200" ]; then
+      pass "Gateway healthy (took ${count}s)"
+      return 0
+    fi
+    sleep 1
+    count=$((count + 1))
+  done
+  fail "Gateway did not become healthy within ${timeout_secs}s"
+  return 1
+}
+
+RABBITMQ_API="http://guest:guest@localhost:15672/api/queues/%2F/analytics.clicks"
+poll_queue_depth() {
+  local op="$1" threshold="$2" timeout_secs="$3"
+  local elapsed=0 depth="0"
+  while [ "$elapsed" -lt "$timeout_secs" ]; do
+    depth=$(curl -sf "${RABBITMQ_API}" \
+      | jq -r '.messages_ready // 0' 2>/dev/null || echo "0")
+    case "$op" in
+      gt) [ "$depth" -gt "$threshold" ] && echo "$depth" && return 0 ;;
+      le) [ "$depth" -le "$threshold" ] && echo "$depth" && return 0 ;;
+      eq) [ "$depth" -eq "$threshold" ] && echo "$depth" && return 0 ;;
+    esac
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  echo "$depth"
+  return 1
+}
 
 # ─── Scenario 1: Rate-limiter CB → fail-open, then recovery ──────────────────
 scenario_1() {
@@ -119,6 +210,7 @@ scenario_1() {
   echo "=== Scenario 1a: 500ms latency injection ==="
 
   HEALTH=$(curl -s "$GATEWAY/health")
+  echo $HEALTH
   if echo "$HEALTH" | grep -q '"rate_limiter_cb":"closed"'; then
     pass "Health check reports rate_limiter_cb=closed"
   else
@@ -156,8 +248,7 @@ scenario_1() {
   $TOXIPROXY toxic delete -n latency_downstream rate-limiter
   pass "Removed latency toxic"
 
-  echo "    Waiting 32s for circuit breaker to recover (half-open → closed)..."
-  sleep 32
+  wait_for_cb_state "rate_limiter_cb" "closed" 45
 
   # After recovery the token bucket was never decremented during the chaos window
   # (fail-open bypasses Redis). So burst=50 tokens are available. Fire 60 rapid
@@ -176,15 +267,14 @@ scenario_1() {
 
 # ─── Scenario 2: Redis slow → CB opens → DB fallback ─────────────────────────
 scenario_2() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
   echo ""
   echo "=== Scenario 2: Redis +200ms latency → CB opens → DB fallback ==="
 
-  # If Scenario 1 ran immediately before this, it exhausted the rate-limit token
-  # bucket (burst=50, rate=100/min ≈ 1.67 tokens/s). Wait for it to fully refill.
-  if should_run 1; then
-    echo "    Waiting 30s for rate-limit token bucket to refill after Scenario 1..."
-    sleep 30
-  fi
+  # Isolate state: instantly wipe token bucket to unblock rate-limiter
+  $COMPOSE exec -T redis-1 redis-cli FLUSHALL >/dev/null || true
 
   for node in redis-1 redis-2 redis-3; do
     $TOXIPROXY toxic add -t latency -a latency=200 "$node"
@@ -218,8 +308,7 @@ scenario_2() {
     $TOXIPROXY toxic delete -n latency_downstream "$node"
   done
   pass "Scenario 2: removed Redis latency toxic"
-  echo "    Waiting 32s for circuit breaker to recover..."
-  sleep 32
+  wait_for_cb_state "cache_cb" "half-open" 45
   # After 30 s (CB Timeout), the breaker transitions Open → HalfOpen.
   # It stays HalfOpen until MaxRequests=3 successful cacheCB.Execute() calls
   # arrive.  A single redirect with a cache miss exercises exactly 3 Execute
@@ -234,6 +323,9 @@ scenario_2() {
 
 # ─── Scenario 3: Redis down → CB opens → DB fallback ─────────────────────────
 scenario_3() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
   echo ""
   echo "=== Scenario 3: Redis complete failure → CB opens → DB fallback ==="
 
@@ -256,12 +348,12 @@ scenario_3() {
     $TOXIPROXY toxic delete -n timeout_downstream "$node"
   done
   pass "Scenario 3: restored Redis"
-  echo "    Waiting 32s for circuit breaker to recover..."
-  sleep 32
+  wait_for_cb_state "cache_cb" "half-open" 45
 }
 
 # ─── Scenario 4: Postgres down → health 503 → recovery ───────────────────────
 scenario_4() {
+  reset_toxics
   echo ""
   echo "=== Scenario 4: Postgres down → /health returns 503 → recovery ==="
 
@@ -281,21 +373,23 @@ scenario_4() {
 
   $COMPOSE start postgres
   pass "Scenario 4: restarted Postgres"
-  echo "    Waiting 10s for connection pool to reconnect..."
-  sleep 10
-
-  HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")
-  if [ "$HEALTH_CODE" = "200" ]; then
-    pass "Scenario 4: /health returns 200 after Postgres recovery"
-  else
-    fail "Scenario 4: /health returned $HEALTH_CODE after recovery, expected 200"
-  fi
+  wait_for_health 20
+  pass "Scenario 4: /health returns 200 after Postgres recovery"
 }
 
 # ─── Scenario 5: RabbitMQ outage resilience ───────────────────────────────────
 scenario_5() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
   echo ""
   echo "=== Scenario 5: RabbitMQ outage resilience (publisher + consumer) ==="
+
+  # Restart analytics-worker to align the 5s flush ticker predictably.
+  # This guarantees the click event isn't flushed immediately if a previous
+  # scenario left the ticker close to firing.
+  $COMPOSE restart analytics-worker
+  sleep 3
 
   # Fire a click event before the outage so it lands in the consumer's unacked batch.
   # FLUSH_INTERVAL defaults to 5s; stopping within that window leaves the message
@@ -303,7 +397,7 @@ scenario_5() {
   curl -s -o /dev/null "$GATEWAY/$CODE"
   sleep 1  # delivery reaches consumer but flush ticker (5s) has not fired yet
 
-  $COMPOSE stop rabbitmq
+  $COMPOSE stop rabbitmq-1
   pass "Stopped RabbitMQ"
   sleep 3  # allow publisher and consumer to detect the disconnect
 
@@ -341,7 +435,7 @@ scenario_5() {
 
   # Restart RabbitMQ and give both sides time to reconnect (exponential backoff, ~10s typical)
   RESTART_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  $COMPOSE start rabbitmq
+  $COMPOSE start rabbitmq-1
   echo "    Waiting 15s for publisher and consumer to reconnect..."
   sleep 15
 
@@ -371,12 +465,132 @@ scenario_5() {
   fi
 }
 
+# ─── Scenario 6: Quorum queue WAL — SIGKILL one node, zero message loss ──────
+# Requires --cluster flag (3-node RabbitMQ cluster overlay).
+#
+# What this tests: every quorum queue publish is fsync'd to the Raft WAL on a
+# majority of nodes before the broker acknowledges it. Killing one node with
+# SIGKILL (no graceful shutdown, no flush) cannot cause data loss because the
+# other two nodes already hold a durable copy. The remaining 2/3 nodes maintain
+# quorum so the queue stays available throughout.
+scenario_6() {
+  reset_toxics
+  local CODE
+  CODE=$(create_test_url)
+  echo ""
+  echo "=== Scenario 6: Quorum queue WAL — zero message loss when one node is SIGKILL'd ==="
+
+  if [ "$CLUSTER" = "false" ]; then
+    fail "Scenario 6 requires --cluster flag (3-node RabbitMQ cluster overlay)"
+    return
+  fi
+
+  # Ensure the quorum queue and its exchange binding exist before stopping the worker.
+  $COMPOSE up -d --no-deps analytics-worker
+  echo "    Waiting for analytics-worker to declare the quorum queue..."
+  for i in $(seq 1 15); do
+    if curl -sf "${RABBITMQ_API}" > /dev/null 2>&1; then
+      break
+    fi
+    if [ "$i" -eq 15 ]; then
+      fail "Scenario 6: quorum queue did not appear within 30s — worker may have failed to start"
+      return
+    fi
+    sleep 2
+  done
+
+  # Verify the queue is a quorum queue replicated across all 3 nodes.
+  members=$(curl -sf "${RABBITMQ_API}" | jq -r '.members | length' 2>/dev/null || echo "0")
+  if [ "$members" -lt 3 ]; then
+    fail "Scenario 6: expected 3 quorum members, got $members — is --cluster active and the cluster healthy?"
+    $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+    return
+  fi
+  pass "Scenario 6: quorum queue confirmed — $members replicas (Raft WAL active on all nodes)"
+
+  $COMPOSE stop analytics-worker
+  echo "    Waiting for RabbitMQ to deregister consumer..."
+  for i in $(seq 1 30); do
+    consumers=$(curl -sf "${RABBITMQ_API}" | jq -r '.consumers // 1' 2>/dev/null || echo "1")
+    if [ "$consumers" -eq 0 ]; then break; fi
+    if [ "$i" -eq 30 ]; then
+      fail "Scenario 6: consumer still registered after 60s (consumers=$consumers)"
+      $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+      return
+    fi
+    sleep 2
+  done
+  pass "Scenario 6: analytics-worker stopped, consumer deregistered"
+
+  # Publish 50 click events. Verify each redirect returned 301 so we know the
+  # gateway accepted them (not silently failing due to a connection issue).
+  published=0
+  for i in $(seq 1 50); do
+    code_status=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/$CODE")
+    if [ "$code_status" = "301" ]; then
+      published=$((published + 1))
+    fi
+  done
+  if [ "$published" -ge 10 ]; then
+    pass "Scenario 6: published $published/50 click events (gateway accepted)"
+  else
+    echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
+    fail "Scenario 6: only $published/50 redirects returned 301 — gateway may be unhealthy"
+    $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+    return
+  fi
+
+  # Poll for messages_ready instead of a fixed sleep — goroutines publishing to
+  # RabbitMQ are fire-and-forget so they may land slightly after the curl loop.
+  if pre_crash=$(poll_queue_depth gt 9 30); then
+    pass "Scenario 6a: pre-crash queue depth = $pre_crash"
+  else
+    echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
+    echo "    DEBUG: queue: $(curl -sf "${RABBITMQ_API}" | jq '{messages_ready,consumers,members}' 2>/dev/null)"
+    fail "Scenario 6a: expected ≥10 messages before crash, got $pre_crash — aborting"
+    $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+    return
+  fi
+
+  # SIGKILL rabbitmq-2 — hard crash, no graceful shutdown, no Erlang cleanup.
+  # rabbitmq-1 (management UI + AMQP) and rabbitmq-3 form a 2/3 majority:
+  # Raft can still serve reads and writes, and the queue stays available.
+  $COMPOSE kill -s SIGKILL rabbitmq-2
+  pass "Scenario 6b: sent SIGKILL to rabbitmq-2"
+
+  # Assert zero message loss — the queue must still be readable via rabbitmq-1
+  # and the depth must equal the pre-crash snapshot. Wait up to 15s for the
+  # quorum queue to elect a new leader.
+  if post_crash=$(poll_queue_depth eq "$pre_crash" 15); then
+    pass "Scenario 6c: queue depth after SIGKILL = $post_crash (zero loss) — WAL + quorum verified"
+  else
+    lost=$(($pre_crash - $post_crash))
+    fail "Scenario 6c: message loss detected — pre=$pre_crash post=$post_crash lost=$lost"
+  fi
+
+  # Restore the killed node and let it rejoin the cluster.
+  $COMPOSE start rabbitmq-2
+  pass "Scenario 6b: restarted rabbitmq-2"
+  echo "    Waiting 15s for rabbitmq-2 to rejoin the cluster..."
+  sleep 15
+
+  # Drain: restart worker and confirm queue empties.
+  $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
+  pass "Scenario 6: restarted analytics-worker ($WORKERS instance(s))"
+  if depth=$(poll_queue_depth le 10 60); then
+    pass "Scenario 6d: queue drained after recovery (depth=$depth)"
+  else
+    fail "Scenario 6d: queue did not drain within 60s (depth=$depth)"
+  fi
+}
+
 # ─── Run selected scenarios ────────────────────────────────────────────────────
 if should_run 1; then scenario_1; fi
 if should_run 2; then scenario_2; fi
 if should_run 3; then scenario_3; fi
 if should_run 4; then scenario_4; fi
 if should_run 5; then scenario_5; fi
+if should_run 6; then scenario_6; fi
 
 # ─── Exit with non-zero status if any assertions failed ───────────────────────
 # (The summary is printed by the cleanup trap so it always appears.)
