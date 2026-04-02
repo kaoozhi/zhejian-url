@@ -128,18 +128,31 @@ reset_toxics() {
     $TOXIPROXY toxic delete -n latency_downstream "$node" 2>/dev/null || true
     $TOXIPROXY toxic delete -n timeout_downstream "$node" 2>/dev/null || true
   done
+  # Reset rate-limiter token bucket to ensure fresh state
+  $COMPOSE exec -T redis-1 redis-cli FLUSHALL >/dev/null 2>&1 || true
 }
 
 create_test_url() {
-  local code
-  code=$(curl -sf -X POST -H 'Content-Type: application/json' \
-    -d "{\"url\":\"https://example.com/chaos-test-$RANDOM\"}" \
-    "$GATEWAY/api/v1/shorten" | jq -r .short_code)
-  if [ -z "$code" ] || [ "$code" = "null" ]; then
-    echo "ERROR"
-    return 1
-  fi
-  echo "$code"
+  local code out
+  local retries=5
+  while [ "$retries" -gt 0 ]; do
+    out=$(curl -s -X POST -H 'Content-Type: application/json' \
+      -d "{\"url\":\"https://example.com/chaos-test-$RANDOM\"}" \
+      "$GATEWAY/api/v1/shorten" || true)
+
+    code=$(echo "$out" | jq -r .short_code 2>/dev/null || echo "null")
+    if [ -n "$code" ] && [ "$code" != "null" ]; then
+      echo "$code"
+      return 0
+    fi
+
+    # Wait and retry, tokens might need to replenish
+    sleep 2
+    retries=$((retries - 1))
+  done
+
+  echo >&2 "Failed to create test URL! Last response: $out"
+  return 1
 }
 
 wait_for_cb_state() {
@@ -261,7 +274,7 @@ scenario_2() {
   echo "=== Scenario 2: Redis +200ms latency → CB opens → DB fallback ==="
 
   # Isolate state: instantly wipe token bucket to unblock rate-limiter
-  $COMPOSE exec -T redis-1 redis-cli FLUSHALL >/dev/null
+  $COMPOSE exec -T redis-1 redis-cli FLUSHALL >/dev/null || true
 
   for node in redis-1 redis-2 redis-3; do
     $TOXIPROXY toxic add -t latency -a latency=200 "$node"
