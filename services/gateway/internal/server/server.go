@@ -21,7 +21,7 @@ import (
 
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // Middleware is registered before routes so it applies to all requests.
-func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *gin.Engine {
+func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) (*gin.Engine, *api.Handler) {
 	r := gin.Default()
 
 	// Metrics endpoint
@@ -51,15 +51,37 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider,
 		rlCB = rateLimiter
 	}
 	handler := api.NewHandler(urlService, db, cache, obs.Logger, pub).WithCBProviders(urlRepo, rlCB)
-	handler.RegisterRoutes(r)
-
-	return r
+	return r, handler
 }
 
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
 func NewServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
-	router := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
+	router, handler := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
+	handler.RegisterRoutes(router)
+
+	return &http.Server{
+		Addr:         ":" + cfg.Server.Port,
+		Handler:      router,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+}
+
+func NewWriteServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
+	router, handler := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
+	handler.RegisterWriteRoutes(router)
+	return &http.Server{Addr: ":" + cfg.WriteServer.Port,
+		Handler:      router,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second}
+}
+
+func NewReadServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
+	router, handler := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
+	handler.RegisterReadRoutes(router)
 
 	return &http.Server{
 		Addr:         ":" + cfg.Server.Port,
