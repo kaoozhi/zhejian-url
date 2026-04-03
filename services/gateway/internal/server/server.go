@@ -21,14 +21,14 @@ import (
 
 // NewRouter initializes all dependencies and returns a configured Gin router.
 // Middleware is registered before routes so it applies to all requests.
-func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) (*gin.Engine, *api.Handler) {
+func NewRouter(serviceName string, cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) (*gin.Engine, *api.Handler) {
 	r := gin.Default()
 
 	// Metrics endpoint
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// Middleware: tracing first (creates span), then logging (reads span context) and metrics
-	r.Use(otelgin.Middleware("gateway"))
+	r.Use(otelgin.Middleware(serviceName))
 	r.Use(middleware.Logging(obs.Logger))
 	r.Use(middleware.Metrics())
 	if rateLimiter != nil {
@@ -57,7 +57,7 @@ func NewRouter(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider,
 // NewServer initializes all dependencies and returns a configured HTTP server.
 // This includes the router plus HTTP server settings (timeouts, address, etc.).
 func NewServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
-	router, handler := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
+	router, handler := NewRouter("gateway", cfg, db, cache, rateLimiter, obs, pub)
 	handler.RegisterRoutes(router)
 
 	return &http.Server{
@@ -69,8 +69,12 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider,
 	}
 }
 
+// NewWriteServer returns an HTTP server for the write-service binary.
+// Serves only write routes (POST /shorten, DELETE /urls/:code).
+// No rate limit middleware — writes are low-frequency and will be protected by auth later.
+// pub should be nil: analytics are not published on the write path.
 func NewWriteServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
-	router, handler := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
+	router, handler := NewRouter("write-service", cfg, db, cache, rateLimiter, obs, pub)
 	handler.RegisterWriteRoutes(router)
 	return &http.Server{Addr: ":" + cfg.WriteServer.Port,
 		Handler:      router,
@@ -79,12 +83,16 @@ func NewWriteServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProv
 		IdleTimeout:  60 * time.Second}
 }
 
+// NewReadServer returns an HTTP server for the read-service binary.
+// Serves only read routes (GET /urls/:code, GET /:code redirect) plus health.
+// Rate limit middleware is active when rateLimiter is non-nil.
+// Analytics publisher fires click events on redirect.
 func NewReadServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {
-	router, handler := NewRouter(cfg, db, cache, rateLimiter, obs, pub)
+	router, handler := NewRouter("read-service", cfg, db, cache, rateLimiter, obs, pub)
 	handler.RegisterReadRoutes(router)
 
 	return &http.Server{
-		Addr:         ":" + cfg.Server.Port,
+		Addr:         ":" + cfg.ReadServer.Port,
 		Handler:      router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,

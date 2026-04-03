@@ -1,4 +1,4 @@
-package writeserver
+package main
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func main() {
 
 	// Setup observability
 	obs, err := observability.Setup(ctx, observability.Config{
-		ServiceName:  "gateway",
+		ServiceName:  "write-service",
 		Environment:  "development",
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	})

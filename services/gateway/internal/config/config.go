@@ -13,6 +13,7 @@ import (
 // Config holds all application configuration
 type Config struct {
 	Server      ServerConfig
+	ReadServer  ServerConfig
 	WriteServer ServerConfig
 	Database    DatabaseConfig
 	App         AppConfig
@@ -91,6 +92,9 @@ func Load() *Config {
 			Port: getEnv("PORT", "8080"),
 			// ReadTimeout:  10 * time.Second,
 			// WriteTimeout: 10 * time.Second,
+		},
+		ReadServer: ServerConfig{
+			Port: getEnv("READ_PORT", "8080"),
 		},
 		WriteServer: ServerConfig{
 			Port: getEnv("WRITE_PORT", "8081"),
