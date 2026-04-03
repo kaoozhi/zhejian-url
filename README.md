@@ -47,12 +47,12 @@ Gateway (Go/Gin, :8080)
 
 | Layer | Technology | Notes |
 |---|---|---|
-| API Gateway | Go 1.23, Gin | Middleware chain: tracing → logging → metrics → rate-limit |
+| API Gateway | Go 1.25, Gin | Middleware chain: tracing → logging → metrics → rate-limit |
 | Rate Limiter | Rust, tonic (gRPC), tokio | Token bucket via atomic Lua script; single Redis round-trip |
 | Cache | Redis 8 (3-node hash ring) | SHA-256 consistent hashing, 150 vnodes/node, circuit breaker |
 | Database | PostgreSQL 16, pgx/v5 pool | pgxpool MaxConns=10; read path ~99% served from cache |
-| Message broker | RabbitMQ 4, durable queue | Fire-and-forget from gateway isolates redirect latency from analytics; worker batch-flushes 100 events or 5s ticker |
-| Analytics Worker | Go 1.23 | Separate module; on DB error, process exits without ack — `restart: on-failure` in Compose requeues messages automatically, preserving at-least-once delivery without explicit nack logic |
+| Message broker | RabbitMQ 4, quorum queue | Fire-and-forget from gateway isolates redirect latency from analytics; worker batch-flushes 100 events or 5s ticker |
+| Analytics Worker | Go 1.25 | Separate module; on DB error, process exits without ack — `restart: on-failure` in Compose requeues messages automatically, preserving at-least-once delivery without explicit nack logic |
 | Observability | OpenTelemetry SDK, Jaeger, Prometheus | Trace IDs injected into slog fields; cache_node labels on metrics |
 | Chaos testing | Toxiproxy, bash scenarios | 6 automated fault injection scenarios; chaos overlay via `docker-compose.chaos.yml` |
 | Load testing | k6 | Baseline / spike / endurance / throughput tests; web dashboard |
