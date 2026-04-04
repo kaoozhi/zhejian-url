@@ -93,11 +93,13 @@ services:
     command: ["./read-server"]
     environment:
       DB_HOST: ${DB_HOST:-postgres}
+      DB_REPLICA_HOST: ${DB_REPLICA_HOST:-}   # empty → falls back to primary
       DB_PORT: ${DB_PORT:-5432}
       DB_USER: ${DB_USER:-zhejian}
       DB_PASSWORD: ${DB_PASSWORD:-zhejian_secret}
       DB_NAME: ${DB_NAME:-urlshortener}
       DB_SSLMODE: ${DB_SSLMODE:-disable}
+      DB_MAX_CONNS: ${DB_READ_MAX_CONNS:-5}
       PORT: "8080"
       CACHE_NODES: ${CACHE_NODES:-redis-1:6379,redis-2:6379,redis-3:6379}
       CACHE_TTL: ${CACHE_TTL:-5m}
@@ -151,6 +153,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-zhejian_secret}
       DB_NAME: ${DB_NAME:-urlshortener}
       DB_SSLMODE: ${DB_SSLMODE:-disable}
+      DB_MAX_CONNS: ${DB_WRITE_MAX_CONNS:-10}
       WRITE_PORT: "8081"
       CACHE_NODES: ${CACHE_NODES:-redis-1:6379,redis-2:6379,redis-3:6379}
       CACHE_TTL: ${CACHE_TTL:-5m}

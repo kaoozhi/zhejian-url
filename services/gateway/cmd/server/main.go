@@ -40,7 +40,7 @@ func main() {
 
 	// Connect to database
 	DBconnectionString := cfg.Database.ConnectionString()
-	db, err := infra.NewPostgresPool(ctx, DBconnectionString)
+	db, err := infra.NewPostgresPool(ctx, DBconnectionString, cfg.Database.MaxConns)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

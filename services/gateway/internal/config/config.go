@@ -31,16 +31,14 @@ type ServerConfig struct {
 
 // DatabaseConfig holds database connection configuration
 type DatabaseConfig struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	DBName   string
-	SSLMode  string
-	// MaxConns    int32
-	// MinConns    int32
-	// MaxConnLife time.Duration
-	// MaxConnIdle time.Duration
+	Host        string
+	ReplicaHost string // DB_REPLICA_HOST — read-only replica; falls back to Host when empty
+	Port        string
+	User        string
+	Password    string
+	DBName      string
+	SSLMode     string
+	MaxConns    int32
 }
 
 // Redis Caching Layer configuration
@@ -100,16 +98,14 @@ func Load() *Config {
 			Port: getEnv("WRITE_PORT", "8081"),
 		},
 		Database: DatabaseConfig{
-			Host:     getEnv("DB_HOST", "localhost"),
-			Port:     getEnv("DB_PORT", "5432"),
-			User:     getEnv("DB_USER", "zhejian"),
-			Password: getEnv("DB_PASSWORD", "zhejian_secret"),
-			DBName:   getEnv("DB_NAME", "urlshortener"),
-			SSLMode:  getEnv("DB_SSLMODE", "disable"),
-			// MaxConns:    10,
-			// MinConns:    2,
-			// MaxConnLife: time.Hour,
-			// MaxConnIdle: 30 * time.Minute,
+			Host:        getEnv("DB_HOST", "localhost"),
+			ReplicaHost: getEnv("DB_REPLICA_HOST", ""),
+			Port:        getEnv("DB_PORT", "5432"),
+			User:        getEnv("DB_USER", "zhejian"),
+			Password:    getEnv("DB_PASSWORD", "zhejian_secret"),
+			DBName:      getEnv("DB_NAME", "urlshortener"),
+			SSLMode:     getEnv("DB_SSLMODE", "disable"),
+			MaxConns:    int32(getEnvInt("DB_MAX_CONNS", 10)),
 		},
 		Cache: CacheConfig{
 			Host:             getEnv("CACHE_HOST", "localhost"),
@@ -155,6 +151,16 @@ type ConnectionInterface interface {
 func (d *DatabaseConfig) ConnectionString() string {
 	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, d.Host, d.Port, d.DBName, d.SSLMode)
 	return connectionString
+}
+
+// ReplicaConnectionString returns the connection string for the read-only replica.
+// Falls back to the primary when DB_REPLICA_HOST is not set.
+func (d *DatabaseConfig) ReplicaConnectionString() string {
+	host := d.ReplicaHost
+	if host == "" {
+		host = d.Host
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, host, d.Port, d.DBName, d.SSLMode)
 }
 
 func (c *CacheConfig) ConnectionString() string {

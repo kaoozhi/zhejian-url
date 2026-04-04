@@ -36,9 +36,9 @@ func main() {
 	}
 	defer obs.Shutdown(ctx)
 
-	// Connect to database
+	// Connect to database — write-service always uses the primary
 	DBconnectionString := cfg.Database.ConnectionString()
-	db, err := infra.NewPostgresPool(ctx, DBconnectionString)
+	db, err := infra.NewPostgresPool(ctx, DBconnectionString, cfg.Database.MaxConns)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

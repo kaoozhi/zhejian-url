@@ -35,7 +35,7 @@ func TestNewPostgresPool(t *testing.T) {
 		connString, err := testDB.Container().ConnectionString(ctx, "sslmode=disable")
 		require.NoError(t, err, "failed to get connection string")
 
-		pool, err := infra.NewPostgresPool(ctx, connString)
+		pool, err := infra.NewPostgresPool(ctx, connString, 0)
 		require.NoError(t, err)
 		defer pool.Close()
 
@@ -43,12 +43,12 @@ func TestNewPostgresPool(t *testing.T) {
 	})
 
 	t.Run("error - invalid connection string", func(t *testing.T) {
-		_, err := infra.NewPostgresPool(ctx, "invalid://connection")
+		_, err := infra.NewPostgresPool(ctx, "invalid://connection", 0)
 		require.Error(t, err, "expected error for invalid connection string")
 	})
 
 	t.Run("error - unreachable host", func(t *testing.T) {
-		_, err := infra.NewPostgresPool(ctx, "postgres://user:pass@localhost:59999/db?sslmode=disable")
+		_, err := infra.NewPostgresPool(ctx, "postgres://user:pass@localhost:59999/db?sslmode=disable", 0)
 		require.Error(t, err, "expected error for unreachable host")
 	})
 }
