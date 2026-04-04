@@ -70,7 +70,7 @@ func NewServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider,
 }
 
 // NewWriteServer returns an HTTP server for the write-service binary.
-// Serves only write routes (POST /shorten, DELETE /urls/:code).
+// Serves write routes (POST /shorten, DELETE /urls/:code) plus health.
 // No rate limit middleware — writes are low-frequency and will be protected by auth later.
 // pub should be nil: analytics are not published on the write path.
 func NewWriteServer(cfg *config.Config, db *pgxpool.Pool, cache cache.ClientProvider, rateLimiter *ratelimit.Client, obs *observability.Observability, pub *analytics.Publisher) *http.Server {

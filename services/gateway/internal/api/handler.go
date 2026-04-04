@@ -76,7 +76,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 }
 
 func (h *Handler) RegisterWriteRoutes(r *gin.Engine) {
-	// Health check endpoint
 	r.GET("/health", h.healthCheck)
 
 	// API v1 routes - grouped for versioning

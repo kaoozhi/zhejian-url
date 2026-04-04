@@ -10,13 +10,17 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o gateway ./cmd/server/main.go
+RUN CGO_ENABLED=0 go build -o gateway ./cmd/server/main.go && \
+    CGO_ENABLED=0 go build -o read-server ./cmd/read-server/main.go && \
+    CGO_ENABLED=0 go build -o write-server ./cmd/write-server/main.go
 
 #Production stage
 FROM alpine:3.19
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 WORKDIR /app
 COPY --from=builder /build/gateway .
+COPY --from=builder /build/read-server .
+COPY --from=builder /build/write-server .
 EXPOSE 8080
 HEALTHCHECK CMD wget -qO- http://localhost:8080/health || exit 1
 CMD ["./gateway"]
