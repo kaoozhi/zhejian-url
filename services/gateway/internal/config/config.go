@@ -143,24 +143,13 @@ func Load() *Config {
 	}
 }
 
-type ConnectionInterface interface {
-	ConnectionString() string
-}
-
 // ConnectionString returns the PostgreSQL connection string
-func (d *DatabaseConfig) ConnectionString() string {
-	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, d.Host, d.Port, d.DBName, d.SSLMode)
-	return connectionString
-}
-
-// ReplicaConnectionString returns the connection string for the read-only replica.
-// Falls back to the primary when DB_REPLICA_HOST is not set.
-func (d *DatabaseConfig) ReplicaConnectionString() string {
-	host := d.ReplicaHost
+func (d *DatabaseConfig) ConnectionString(host string) string {
 	if host == "" {
 		host = d.Host
 	}
-	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, host, d.Port, d.DBName, d.SSLMode)
+	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, host, d.Port, d.DBName, d.SSLMode)
+	return connectionString
 }
 
 func (c *CacheConfig) ConnectionString() string {

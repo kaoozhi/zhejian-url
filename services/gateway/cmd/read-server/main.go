@@ -39,7 +39,7 @@ func main() {
 	defer obs.Shutdown(ctx)
 
 	// Connect to database — read-service uses the replica when DB_REPLICA_HOST is set
-	DBconnectionString := cfg.Database.ReplicaConnectionString()
+	DBconnectionString := cfg.Database.ConnectionString(cfg.Database.ReplicaHost)
 	db, err := infra.NewPostgresPool(ctx, DBconnectionString, cfg.Database.MaxConns)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
