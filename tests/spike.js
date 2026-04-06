@@ -8,11 +8,13 @@
 // Run:
 //   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/spike-report.html \
 //   k6 run tests/spike.js
+//
+// Traffic flows: k6 → nginx(:80) → read-service (redirects) / write-service (setup POSTs)
 
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const BASE_URL = __ENV.BASE_URL || 'http://localhost';
 
 // Zipf-like weights: top URL ~40% of traffic, second ~20%, rest share remainder.
 const WEIGHTS = [40, 20, 8, 7, 6, 5, 5, 5, 2, 2];

@@ -4,7 +4,7 @@
 //
 // Usage:
 //   k6 run tests/analytics-load.js
-//   k6 run tests/analytics-load.js -e BASE_URL=http://localhost:8080
+//   k6 run tests/analytics-load.js -e BASE_URL=http://localhost
 //
 // What it does:
 //   setup()   — creates 10 short URLs
@@ -42,7 +42,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const BASE_URL = __ENV.BASE_URL || 'http://localhost';
 
 // Zipf-like weights: top URL gets ~40% of traffic, second ~20%, rest share the remainder.
 // This mirrors real-world link popularity distributions.

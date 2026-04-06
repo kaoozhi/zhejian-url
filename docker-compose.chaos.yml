@@ -68,16 +68,29 @@ services:
       - toxiproxy
     restart: "no"
 
-  # Override gateway: route all dependencies through toxiproxy.
-  # AMQP_URL and RATE_LIMITER_ADDR are hardcoded here so local .env overrides
-  # (e.g. localhost URLs set for host-gateway load tests) don't leak in.
-  gateway:
+  # Override read-service: route all dependencies through toxiproxy.
+  # Env vars hardcoded so local .env overrides don't leak in.
+  read-service:
     environment:
       - RATE_LIMITER_ADDR=toxiproxy:50052
       - AMQP_URL=amqp://guest:guest@rabbitmq-1:5672/
       - CACHE_NODES=toxiproxy:6382,toxiproxy:6383,toxiproxy:6384
-      # Tighten Redis timeouts so latency injection (200ms) reliably exceeds
-      # the client deadline and triggers the circuit breaker.
+      # Tighten Redis timeouts so 200ms latency injection reliably trips the CB.
+      - CACHE_READ_TIMEOUT=100ms
+      - CACHE_WRITE_TIMEOUT=100ms
+      - DB_HOST=toxiproxy
+      - DB_PORT=5433
+    depends_on:
+      toxiproxy-init:
+        condition: service_completed_successfully
+
+  # Override write-service: route cache and DB through toxiproxy.
+  # No rate limiter or AMQP — write-service runs with both disabled.
+  write-service:
+    environment:
+      - RATE_LIMITER_ADDR=
+      - AMQP_URL=
+      - CACHE_NODES=toxiproxy:6382,toxiproxy:6383,toxiproxy:6384
       - CACHE_READ_TIMEOUT=100ms
       - CACHE_WRITE_TIMEOUT=100ms
       - DB_HOST=toxiproxy

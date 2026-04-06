@@ -9,6 +9,8 @@ on:
 jobs:
   integration:
     runs-on: ubuntu-latest
+    env:
+      BASE_URL: http://localhost
 
     steps:
       - uses: actions/checkout@v5
@@ -37,16 +39,16 @@ jobs:
             compose-file: "./docker-compose.prod.yml"
             up-flags: "-d"
 
-      - name: Wait for gateway to be healthy
+      - name: Wait for services to be healthy
         run: |
-          echo "Waiting for gateway..."
+          echo "Waiting for nginx/read-service..."
           for i in $(seq 1 30); do
-            if curl --fail --silent http://localhost:8080/health > /dev/null; then
-              echo "✓ Gateway is healthy (attempt $i)"
+            if curl --fail --silent $BASE_URL/health > /dev/null; then
+              echo "✓ Services healthy (attempt $i)"
               break
             fi
             if [ "$i" -eq 30 ]; then
-              echo "✗ Gateway health check timed out after 60s"
+              echo "✗ Health check timed out after 60s"
               docker compose -f docker-compose.prod.yml ps
               docker compose -f docker-compose.prod.yml logs
               exit 1
@@ -68,7 +70,7 @@ jobs:
 
       - name: Smoke test - health endpoint
         run: |
-          RESPONSE=$(curl --fail --silent http://localhost:8080/health)
+          RESPONSE=$(curl --fail --silent $BASE_URL/health)
           echo "$RESPONSE"
           echo "✓ Health check passed"
 
@@ -79,7 +81,7 @@ jobs:
             -X POST \
             -H "Content-Type: application/json" \
             -d '{"url": "https://example.com/ci-test"}' \
-            http://localhost:8080/api/v1/shorten)
+            $BASE_URL/api/v1/shorten)
           echo "$RESPONSE"
           CODE=$(echo "$RESPONSE" | jq -r '.short_code')
           if [ -z "$CODE" ] || [ "$CODE" = "null" ]; then
@@ -92,7 +94,7 @@ jobs:
       - name: Smoke test - get URL metadata
         run: |
           CODE="${{ steps.shorten.outputs.short_code }}"
-          RESPONSE=$(curl --fail --silent "http://localhost:8080/api/v1/urls/$CODE")
+          RESPONSE=$(curl --fail --silent "$BASE_URL/api/v1/urls/$CODE")
           echo "$RESPONSE"
           ORIGINAL=$(echo "$RESPONSE" | jq -r '.original_url')
           if [ "$ORIGINAL" != "https://example.com/ci-test" ]; then
@@ -104,7 +106,7 @@ jobs:
       - name: Smoke test - redirect
         run: |
           CODE="${{ steps.shorten.outputs.short_code }}"
-          HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" "http://localhost:8080/$CODE")
+          HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" "$BASE_URL/$CODE")
           if [ "$HTTP_CODE" != "301" ]; then
             echo "✗ Expected 301, got $HTTP_CODE"
             exit 1
@@ -135,12 +137,12 @@ jobs:
         run: |
           CODE="${{ steps.shorten.outputs.short_code }}"
           docker compose -f docker-compose.prod.yml stop analytics-worker
-          HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" "http://localhost:8080/$CODE")
+          HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" "$BASE_URL/$CODE")
           if [ "$HTTP_CODE" != "301" ]; then
-            echo "✗ Gateway coupled to analytics-worker: got $HTTP_CODE, expected 301"
+            echo "✗ read-service coupled to analytics-worker: got $HTTP_CODE, expected 301"
             exit 1
           fi
-          echo "✓ Gateway returns 301 even with analytics-worker down"
+          echo "✓ read-service returns 301 even with analytics-worker down"
           docker compose -f docker-compose.prod.yml start analytics-worker
 
       - name: Smoke test - rate limit enforced (429)
@@ -150,7 +152,7 @@ jobs:
           # drains quickly. The 51st consecutive request should be rate-limited.
           got_429=false
           for i in $(seq 1 60); do
-            HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+            HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" $BASE_URL/health)
             if [ "$HTTP_CODE" = "429" ]; then
               got_429=true
               echo "✓ Rate limit enforced after $i requests (got 429)"

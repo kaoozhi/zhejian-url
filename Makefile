@@ -123,12 +123,12 @@ load-throughput:
 	K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-report.html \
 	k6 run tests/throughput.js
 
-## Phase 10B: single-node baseline — restart gateway with one Redis node first:
-##   CACHE_NODES=redis-1:6379 docker compose up -d gateway
+## Phase 10B: single-node baseline — restart read-service with one Redis node first:
+##   CACHE_NODES=redis-1:6379 docker compose up -d read-service
 load-throughput-single:
-	RATE_LIMITER_ADDR="" AMQP_URL="" CACHE_NODES=redis-1:6379 docker compose up -d gateway
+	RATE_LIMITER_ADDR="" AMQP_URL="" CACHE_NODES=redis-1:6379 docker compose up -d read-service write-service nginx
 	docker compose up -d --no-deps prometheus grafana
-	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	@until curl -sf http://localhost/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
@@ -144,39 +144,45 @@ load-throughput-single:
 load-throughput-single-host:
 	docker compose up -d postgres migrations redis-1
 	docker compose up -d --no-deps prometheus grafana
-	docker compose stop gateway || true
-	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
-	if [ -n "$$existing_pid" ]; then \
-		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
-		kill $$existing_pid || true; \
-		sleep 1; \
-	fi
-	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway.log)"
+	docker compose stop read-service write-service nginx || true
+	@for port in 8080 8081; do \
+		existing_pid=$$(lsof -tiTCP:$$port -sTCP:LISTEN || true); \
+		if [ -n "$$existing_pid" ]; then \
+			echo "Stopping existing listener on :$$port (PID $$existing_pid)"; \
+			kill $$existing_pid || true; \
+			sleep 1; \
+		fi; \
+	done
+	@echo "Starting host read-server(:8080) and write-server(:8081)"
 	@cd services/gateway && \
 		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379 RATE_LIMITER_ADDR='' AMQP_URL='' \
 		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
 		CACHE_CB_MIN_REQUESTS=50 CACHE_CB_FAILURE_RATE=0.2 CACHE_CB_CONSECUTIVE_FAILURES=0 CACHE_CB_TIMEOUT=30s \
-		go run cmd/server/main.go > host-gateway-single.log 2>&1 & \
-		echo $$! > host-gateway.pid
+		go run cmd/read-server/main.go > host-read-single.log 2>&1 & echo $$! > host-read.pid
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379 RATE_LIMITER_ADDR='' AMQP_URL='' \
+		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
+		go run cmd/write-server/main.go > host-write-single.log 2>&1 & echo $$! > host-write.pid
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single-host.html \
 		script -q -c "k6 run tests/throughput.js" results/throughput-single-host.log; \
 	else \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-single-host.html \
 		script -q results/throughput-single-host.log k6 run tests/throughput.js; \
 	fi
-	@echo "Host gateway running with PID $$(cat services/gateway/host-gateway.pid)."
-	@echo "Stop with: kill $$(cat services/gateway/host-gateway.pid)"
+	@echo "Stop with: kill $$(cat ./host-read.pid) $$(cat ./host-write.pid)"
 
-## Phase 10B: 3-node ring measurement — restart gateway with full ring first:
-##   docker compose up -d gateway
+## Phase 10B: 3-node ring measurement — restart read-service with full ring:
+##   docker compose up -d read-service
 load-throughput-ring:
-	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	RATE_LIMITER_ADDR="" docker compose up -d read-service write-service nginx
 	docker compose up -d --no-deps prometheus grafana
-	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	@until curl -sf http://localhost/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
@@ -193,37 +199,44 @@ load-throughput-ring:
 ## Scale workers before running to compare: docker compose up -d --scale analytics-worker=N
 ## Prometheus query: rabbitmq_queue_messages_ready{queue="analytics.clicks"}
 load-throughput-ring-host:
-	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq analytics-worker prometheus
+	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq-1 analytics-worker prometheus
 	docker compose up -d --no-deps grafana
-	docker compose stop gateway || true
-	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
-	if [ -n "$$existing_pid" ]; then \
-		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
-		kill $$existing_pid || true; \
-		sleep 1; \
-	fi
-	@echo "Starting host gateway in background terminal (logs: services/gateway/host-gateway-ring.log)"
+	docker compose stop read-service write-service nginx || true
+
+	@for port in 8080 8081; do \
+		existing_pid=$$(lsof -tiTCP:$$port -sTCP:LISTEN || true); \
+		if [ -n "$$existing_pid" ]; then \
+			echo "Stopping existing listener on :$$port (PID $$existing_pid)"; \
+			kill $$existing_pid || true; \
+			sleep 1; \
+		fi; \
+	done
+	@echo "Starting host read-server(:8080) and write-server(:8081)"
 	@cd services/gateway && \
 		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
 		AMQP_URL=amqp://guest:guest@localhost:5672/ \
 		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
 		CACHE_CB_MIN_REQUESTS=50 CACHE_CB_FAILURE_RATE=0.2 CACHE_CB_CONSECUTIVE_FAILURES=0 CACHE_CB_TIMEOUT=30s \
-		go run cmd/server/main.go > host-gateway-ring.log 2>&1 & \
-		echo $$! > host-gateway.pid
+		go run cmd/read-server/main.go > host-read-ring.log 2>&1 & echo $$! > host-read.pid
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
+		AMQP_URL='' CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
+		go run cmd/write-server/main.go > host-write-ring.log 2>&1 & echo $$! > host-write.pid
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	@echo "Stack ready. Prometheus at http://localhost:9090"
 	@echo "Query: rabbitmq_queue_messages_ready{queue=\"analytics.clicks\"}"
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring-host.html \
 		script -q -c "k6 run tests/throughput.js" results/throughput-ring-host.log; \
 	else \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/throughput-ring-host.html \
 		script -q results/throughput-ring-host.log k6 run tests/throughput.js; \
 	fi
-	@echo "Host gateway running with PID $$(cat services/gateway/host-gateway.pid)."
-	@echo "Stop with: kill $$(cat services/gateway/host-gateway.pid)"
+	@echo "Stop with: kill $$(cat ./host-read.pid) $$(cat ./host-write.pid)"
 
 ## Phase 10C: competing consumers — 1 worker baseline (queue should grow unboundedly)
 ## Host gateway + 3-node Redis ring + RabbitMQ. Prometheus query:
@@ -233,75 +246,89 @@ load-queue-1worker:
 	docker compose up -d --no-deps prometheus
 	docker compose up -d --no-deps grafana
 	docker compose up -d --no-deps --scale analytics-worker=1 analytics-worker
-	docker compose stop gateway || true
-	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
-	if [ -n "$$existing_pid" ]; then \
-		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
-		kill $$existing_pid || true; \
-		sleep 1; \
-	fi
+	docker compose stop read-service write-service nginx || true
+	@for port in 8080 8081; do \
+		existing_pid=$$(lsof -tiTCP:$$port -sTCP:LISTEN || true); \
+		if [ -n "$$existing_pid" ]; then \
+			echo "Stopping existing listener on :$$port (PID $$existing_pid)"; \
+			kill $$existing_pid || true; \
+			sleep 1; \
+		fi; \
+	done
 	@cd services/gateway && \
 		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
 		AMQP_URL=amqp://guest:guest@localhost:5672/ \
 		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
 		CACHE_CB_MIN_REQUESTS=50 CACHE_CB_FAILURE_RATE=0.2 CACHE_CB_CONSECUTIVE_FAILURES=0 CACHE_CB_TIMEOUT=30s \
-		go run cmd/server/main.go > host-gateway-ring.log 2>&1 & \
-		echo $$! > host-gateway.pid
+		go run cmd/read-server/main.go > host-read-ring.log 2>&1 & echo $$! > host-read.pid
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
+		AMQP_URL='' CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
+		go run cmd/write-server/main.go > host-write-ring.log 2>&1 & echo $$! > host-write.pid
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	@echo "1 analytics worker running. Prometheus at http://localhost:9090"
 	@echo "Query: rabbitmq_queue_messages_ready{queue=\"analytics.clicks\"}"
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-1worker.html \
 		script -q -c "k6 run tests/throughput.js" results/queue-1worker.log; \
 	else \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-1worker.html \
 		script -q results/queue-1worker.log k6 run tests/throughput.js; \
 	fi
-	@echo "Stop gateway with: kill $$(cat services/gateway/host-gateway.pid)"
+	@echo "Stop with: kill $$(cat ./host-read.pid) $$(cat ./host-write.pid)"
 
 ## Phase 10C: competing consumers — 3 workers (queue should stabilise)
 ## Host gateway + 3-node Redis ring + RabbitMQ. Run after load-queue-1worker to compare.
 ## Prometheus query: rabbitmq_queue_messages_ready{queue="analytics.clicks"}
 load-queue-3workers:
-	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq
+	docker compose up -d postgres migrations redis-1 redis-2 redis-3 rabbitmq-1
 	docker compose up -d --no-deps prometheus
 	docker compose up -d --no-deps grafana
 	docker compose up -d --no-deps --scale analytics-worker=3 analytics-worker
-	docker compose stop gateway || true
-	@existing_pid=$$(lsof -tiTCP:8080 -sTCP:LISTEN || true); \
-	if [ -n "$$existing_pid" ]; then \
-		echo "Stopping existing listener on :8080 (PID $$existing_pid)"; \
-		kill $$existing_pid || true; \
-		sleep 1; \
-	fi
+	docker compose stop read-service write-service nginx || true
+	@for port in 8080 8081; do \
+		existing_pid=$$(lsof -tiTCP:$$port -sTCP:LISTEN || true); \
+		if [ -n "$$existing_pid" ]; then \
+			echo "Stopping existing listener on :$$port (PID $$existing_pid)"; \
+			kill $$existing_pid || true; \
+			sleep 1; \
+		fi; \
+	done
 	@cd services/gateway && \
 		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
 		AMQP_URL=amqp://guest:guest@localhost:5672/ \
 		CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
 		CACHE_CB_MIN_REQUESTS=50 CACHE_CB_FAILURE_RATE=0.2 CACHE_CB_CONSECUTIVE_FAILURES=0 CACHE_CB_TIMEOUT=30s \
-		go run cmd/server/main.go > host-gateway-ring.log 2>&1 & \
-		echo $$! > host-gateway.pid
+		go run cmd/read-server/main.go > host-read-ring.log 2>&1 & echo $$! > host-read.pid
+	@cd services/gateway && \
+		DB_HOST=localhost DB_PORT=5432 CACHE_NODES=localhost:6379,localhost:6380,localhost:6381 RATE_LIMITER_ADDR='' \
+		AMQP_URL='' CACHE_OPERATION_TIMEOUT=500ms CACHE_POOL_SIZE=50 \
+		go run cmd/write-server/main.go > host-write-ring.log 2>&1 & echo $$! > host-write.pid
 	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
 	@echo "3 analytics workers running. Prometheus at http://localhost:9090"
 	@echo "Query: rabbitmq_queue_messages_ready{queue=\"analytics.clicks\"}"
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-3workers.html \
 		script -q -c "k6 run tests/throughput.js" results/queue-3workers.log; \
 	else \
+		BASE_URL=http://localhost:8080 WRITE_URL=http://localhost:8081 \
 		K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/queue-3workers.html \
 		script -q results/queue-3workers.log k6 run tests/throughput.js; \
 	fi
-	@echo "Stop gateway with: kill $$(cat services/gateway/host-gateway.pid)"
+	@echo "Stop with: kill $$(cat ./host-read.pid) $$(cat ./host-write.pid)"
 
 ## Phase 11: hot-key stress, single CB (before) — 20 URLs, CB should trip
 load-hotkey-single-cb:
-	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	RATE_LIMITER_ADDR="" docker compose up -d read-service write-service nginx
 	docker compose up -d --no-deps prometheus grafana
-	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	@until curl -sf http://localhost/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
@@ -314,9 +341,9 @@ load-hotkey-single-cb:
 
 ## Phase 11: hot-key stress, per-node CB (after) — same 20-URL load, only hot node trips
 load-hotkey-per-node-cb:
-	RATE_LIMITER_ADDR="" docker compose up -d gateway
+	RATE_LIMITER_ADDR="" docker compose up -d read-service write-service nginx
 	docker compose up -d --no-deps prometheus grafana
-	@until curl -sf http://localhost:8080/health > /dev/null 2>&1; do sleep 1; done
+	@until curl -sf http://localhost/health > /dev/null 2>&1; do sleep 1; done
 	mkdir -p results
 	@set -e; \
 	if script --version > /dev/null 2>&1; then \
@@ -352,9 +379,9 @@ clean:
 logs:
 	docker-compose logs -f
 
-## Show logs for gateway
+## Show logs for read-service and write-service
 logs-gateway:
-	docker-compose logs -f gateway
+	docker compose logs -f read-service write-service
 
 ## Show logs for rate limiter
 logs-limiter:

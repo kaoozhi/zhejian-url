@@ -44,7 +44,7 @@ jobs:
           version: v1.64.8
           working-directory: services/analytics-worker
 
-  gateway:
+  gateway-services:
     runs-on: ubuntu-latest
     strategy:
       matrix:

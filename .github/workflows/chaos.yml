@@ -40,7 +40,7 @@ jobs:
       - name: Run chaos test
         run: |
           chmod +x scripts/chaos-test.sh
-          ./scripts/chaos-test.sh prod --cluster
+          ./scripts/chaos-test.sh prod --cluster --workers 3
 
       - name: Dump logs on failure
         if: failure()

@@ -7,7 +7,7 @@
 // cache hits normally.
 //
 // REQUIRES RATE LIMITER DISABLED:
-//   RATE_LIMITER_ADDR="" docker compose up -d gateway
+//   RATE_LIMITER_ADDR="" docker compose up -d read-service
 //   curl -s http://localhost:8080/health | jq 'has("rate_limiter_cb")'
 //   # Expected: false
 //
@@ -16,15 +16,17 @@
 //   script -q -c "k6 run tests/hotkey.js" results/hotkey-single-cb.log
 //
 // Watch CB behaviour in a second terminal while the test runs:
-//   watch -n1 'docker compose logs --tail=5 gateway | grep -i "circuit\|too many"'
+//   watch -n1 'docker compose logs --tail=5 read-service | grep -i "circuit\|too many"'
 //
 // Key metrics to compare:
 //   grep -E "p\(95\)|http_reqs\b|http_req_failed" results/hotkey-single-cb.log
+//
+// Traffic flows: k6 → nginx(:80) → read-service (redirects) / write-service (setup POSTs)
 
 import http from 'k6/http';
 import { check } from 'k6';
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const BASE_URL = __ENV.BASE_URL || 'http://localhost';
 
 // 20 URLs: small enough that SHA-256 hashing concentrates most keys on one or
 // two ring nodes, reproducing the hot-key saturation pattern.
