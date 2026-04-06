@@ -10,13 +10,17 @@ import (
 )
 
 // NewPostgresPool creates a configured connection pool for PostgreSQL.
-func NewPostgresPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
+// maxConns sets the pool ceiling; pass 0 to use the default of 10.
+func NewPostgresPool(ctx context.Context, connString string, maxConns int32) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(connString)
 	if err != nil {
 		return nil, err
 	}
 
-	config.MaxConns = 10
+	if maxConns <= 0 {
+		maxConns = 10
+	}
+	config.MaxConns = maxConns
 	config.MinConns = 2
 	config.MaxConnLifetime = time.Hour
 	config.MaxConnIdleTime = 30 * time.Minute

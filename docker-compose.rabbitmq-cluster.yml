@@ -60,9 +60,10 @@ services:
       retries: 10
       start_period: 30s
 
-  # Extend the gateway's depends_on to wait for all cluster members.
+  # Extend read-service's depends_on to wait for all cluster members.
   # Compose merges this with the base depends_on (which already waits for rabbitmq-1).
-  gateway:
+  # write-service has AMQP disabled so it does not need to wait for cluster members.
+  read-service:
     depends_on:
       rabbitmq-2:
         condition: service_healthy

@@ -55,7 +55,7 @@ else
   COMPOSE="docker compose -f $BASE_COMPOSE -f docker-compose.chaos.yml"
 fi
 TOXIPROXY="docker exec zhejian-toxiproxy /toxiproxy-cli"
-GATEWAY="http://localhost:8080"
+BASE_URL="http://localhost"  # nginx entry point — routes to read/write service by method
 PASSED=0
 FAILED=0
 
@@ -92,23 +92,25 @@ trap cleanup EXIT
 echo "=== Starting chaos stack ==="
 $COMPOSE up -d $BUILD_FLAG
 
-# ─── Wait for gateway ──────────────────────────────────────────────────────────
-echo "=== Waiting for gateway ==="
+# ─── Wait for services via nginx ───────────────────────────────────────────────
+echo "=== Waiting for stack (nginx → read-service / write-service) ==="
 for i in $(seq 1 30); do
-  if curl -sf "$GATEWAY/health" > /dev/null; then
-    pass "Gateway healthy (attempt $i)"
+  if curl -sf "$BASE_URL/health" > /dev/null; then
+    pass "Stack healthy (attempt $i)"
     break
   fi
   if [ "$i" -eq 30 ]; then
-    fail "Gateway not ready after 60s"
-    $COMPOSE logs gateway
+    fail "Stack not ready after 60s"
+    $COMPOSE logs read-service
+    $COMPOSE logs write-service
+    $COMPOSE logs nginx
     exit 1
   fi
   sleep 2
 done
 
 # ─── Verify toxiproxy CLI is reachable ────────────────────────────────────────
-# The depends_on chain guarantees toxiproxy-init completed before gateway is
+# The depends_on chain guarantees toxiproxy-init completed before read-service is
 # healthy, but we add an explicit poll here for CI cold-start safety.
 echo "=== Verifying toxiproxy CLI ==="
 for i in $(seq 1 10); do
@@ -138,7 +140,7 @@ create_test_url() {
   while [ "$retries" -gt 0 ]; do
     out=$(curl -s -X POST -H 'Content-Type: application/json' \
       -d "{\"url\":\"https://example.com/chaos-test-$RANDOM\"}" \
-      "$GATEWAY/api/v1/shorten" || true)
+      "$BASE_URL/api/v1/shorten" || true)
 
     code=$(echo "$out" | jq -r .short_code 2>/dev/null || echo "null")
     if [ -n "$code" ] && [ "$code" != "null" ]; then
@@ -159,7 +161,7 @@ wait_for_cb_state() {
   local cb_name="$1" expected_state="$2" timeout_secs="$3" count=0
   echo "    Waiting up to ${timeout_secs}s for ${cb_name} to become ${expected_state}..."
   while [ "$count" -lt "$timeout_secs" ]; do
-    if curl -s "$GATEWAY/health" | grep -q "\"${cb_name}\":\"${expected_state}\""; then
+    if curl -s "$BASE_URL/health" | grep -q "\"${cb_name}\":\"${expected_state}\""; then
       pass "${cb_name} is ${expected_state} (took ${count}s)"
       return 0
     fi
@@ -172,16 +174,16 @@ wait_for_cb_state() {
 
 wait_for_health() {
   local timeout_secs="$1" count=0
-  echo "    Waiting up to ${timeout_secs}s for gateway health=200..."
+  echo "    Waiting up to ${timeout_secs}s for read-service health=200..."
   while [ "$count" -lt "$timeout_secs" ]; do
-    if [ "$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")" = "200" ]; then
-      pass "Gateway healthy (took ${count}s)"
+    if [ "$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")" = "200" ]; then
+      pass "read-service healthy (took ${count}s)"
       return 0
     fi
     sleep 1
     count=$((count + 1))
   done
-  fail "Gateway did not become healthy within ${timeout_secs}s"
+  fail "read-service did not become healthy within ${timeout_secs}s"
   return 1
 }
 
@@ -209,7 +211,7 @@ scenario_1() {
   echo ""
   echo "=== Scenario 1a: 500ms latency injection ==="
 
-  HEALTH=$(curl -s "$GATEWAY/health")
+  HEALTH=$(curl -s "$BASE_URL/health")
   echo $HEALTH
   if echo "$HEALTH" | grep -q '"rate_limiter_cb":"closed"'; then
     pass "Health check reports rate_limiter_cb=closed"
@@ -227,7 +229,7 @@ scenario_1() {
   # All 10 must return 200 (fail-open, never 503 or 429).
   all_ok=true
   for i in $(seq 1 10); do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
     if [ "$code" != "200" ]; then
       fail "Request $i returned $code, expected 200 (fail-open)"
       all_ok=false
@@ -235,7 +237,7 @@ scenario_1() {
   done
   if [ "$all_ok" = "true" ]; then pass "All 10 requests returned 200 during fail-open"; fi
 
-  HEALTH=$(curl -s "$GATEWAY/health")
+  HEALTH=$(curl -s "$BASE_URL/health")
   if echo "$HEALTH" | grep -q '"rate_limiter_cb":"open"'; then
     pass "Health check reports rate_limiter_cb=open"
   else
@@ -255,7 +257,7 @@ scenario_1() {
   # requests to exhaust the burst and confirm 429 is back.
   got_429=false
   for i in $(seq 1 60); do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
     if [ "$code" = "429" ]; then
       got_429=true
       pass "Rate limiting enforced after recovery (429 at request $i)"
@@ -285,7 +287,7 @@ scenario_2() {
   # Subsequent requests fall back to DB. All must return 301.
   all_ok=true
   for i in $(seq 1 10); do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/$CODE")
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/$CODE")
     if [ "$code" != "301" ]; then
       fail "Scenario 2: request $i returned $code, expected 301 (DB fallback)"
       all_ok=false
@@ -297,7 +299,7 @@ scenario_2() {
   # Use curl -s (not -sf): the health endpoint returns 503 during Redis
   # degradation because redisPinger.Ping() also times out, but the JSON body
   # still carries cache_cb="open" which is what we want to assert.
-  HEALTH=$(curl -s "$GATEWAY/health")
+  HEALTH=$(curl -s "$BASE_URL/health")
   if echo "$HEALTH" | grep -q '"cache_cb":"open"'; then
     pass "Scenario 2: health check reports cache_cb=open"
   else
@@ -314,8 +316,8 @@ scenario_2() {
   # arrive.  A single redirect with a cache miss exercises exactly 3 Execute
   # calls (cacheGet × 2 in singleflight + cacheSet), so one probe is enough
   # to close the breaker.  Fire a few to be safe.
-  for i in $(seq 1 3); do curl -s -o /dev/null "$GATEWAY/$CODE"; done
-  HEALTH=$(curl -s "$GATEWAY/health")
+  for i in $(seq 1 3); do curl -s -o /dev/null "$BASE_URL/$CODE"; done
+  HEALTH=$(curl -s "$BASE_URL/health")
   echo "$HEALTH" | grep -q '"cache_cb":"closed"' \
     && pass "Scenario 2: cache CB recovered (closed)" \
     || fail "Scenario 2: cache CB did not recover"
@@ -336,7 +338,7 @@ scenario_3() {
 
   all_ok=true
   for i in $(seq 1 10); do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/$CODE")
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/$CODE")
     if [ "$code" != "301" ]; then
       fail "Scenario 3: request $i returned $code, expected 301"
       all_ok=false
@@ -360,7 +362,7 @@ scenario_4() {
   $COMPOSE stop postgres
   pass "Stopped Postgres"
 
-  HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/health")
+  HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
   if [ "$HEALTH_CODE" = "503" ]; then
     pass "Scenario 4: /health returns 503 with Postgres down"
   else
@@ -368,8 +370,8 @@ scenario_4() {
   fi
 
   # Gateway process must still be running (no panic/crash).
-  curl -s "$GATEWAY/health" > /dev/null 2>&1 || true
-  pass "Scenario 4: gateway process stable (no crash)"
+  curl -s "$BASE_URL/health" > /dev/null 2>&1 || true
+  pass "Scenario 4: read-service process stable (no crash)"
 
   $COMPOSE start postgres
   pass "Scenario 4: restarted Postgres"
@@ -394,7 +396,7 @@ scenario_5() {
   # Fire a click event before the outage so it lands in the consumer's unacked batch.
   # FLUSH_INTERVAL defaults to 5s; stopping within that window leaves the message
   # unacked → RabbitMQ requeues it automatically when the connection closes.
-  curl -s -o /dev/null "$GATEWAY/$CODE"
+  curl -s -o /dev/null "$BASE_URL/$CODE"
   sleep 1  # delivery reaches consumer but flush ticker (5s) has not fired yet
 
   $COMPOSE stop rabbitmq-1
@@ -404,7 +406,7 @@ scenario_5() {
   # 5a: Publisher fire-and-forget — redirects must not block
   all_ok=true
   for i in $(seq 1 10); do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/$CODE")
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/$CODE")
     if [ "$code" != "301" ]; then
       fail "Scenario 5a: request $i returned $code, expected 301 (fire-and-forget)"
       all_ok=false
@@ -417,15 +419,15 @@ scenario_5() {
   # Poll /health for amqp_connected=false — avoids Docker log buffering races.
   FOUND_GW=false
   for _attempt in 1 2 3 4 5; do
-    if curl -s "$GATEWAY/health" | grep -q '"amqp_connected":false'; then
+    if curl -s "$BASE_URL/health" | grep -q '"amqp_connected":false'; then
       FOUND_GW=true; break
     fi
     sleep 2
   done
   if [ "$FOUND_GW" = "true" ]; then
-    pass "Scenario 5b: gateway publisher detected broker disconnect"
+    pass "Scenario 5b: read-service publisher detected broker disconnect"
   else
-    fail "Scenario 5b: gateway publisher did not log broker disconnect"
+    fail "Scenario 5b: read-service publisher did not detect broker disconnect"
   fi
   if $COMPOSE logs --since 2m analytics-worker 2>/dev/null | grep -q "broker connection lost"; then
     pass "Scenario 5b: analytics-worker consumer detected broker disconnect"
@@ -440,10 +442,10 @@ scenario_5() {
   sleep 15
 
   # 5c: Publisher reconnected
-  if $COMPOSE logs --since "$RESTART_TIME" gateway 2>/dev/null | grep -q "AMQP reconnected successfully"; then
-    pass "Scenario 5c: gateway publisher reconnected to RabbitMQ"
+  if $COMPOSE logs --since "$RESTART_TIME" read-service 2>/dev/null | grep -q "AMQP reconnected successfully"; then
+    pass "Scenario 5c: read-service publisher reconnected to RabbitMQ"
   else
-    fail "Scenario 5c: gateway publisher did not reconnect"
+    fail "Scenario 5c: read-service publisher did not reconnect"
   fi
 
   # 5d: Consumer reconnected
@@ -526,7 +528,7 @@ scenario_6() {
   # gateway accepted them (not silently failing due to a connection issue).
   published=0
   for i in $(seq 1 50); do
-    code_status=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY/$CODE")
+    code_status=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/$CODE")
     if [ "$code_status" = "301" ]; then
       published=$((published + 1))
     fi
@@ -534,8 +536,8 @@ scenario_6() {
   if [ "$published" -ge 10 ]; then
     pass "Scenario 6: published $published/50 click events (gateway accepted)"
   else
-    echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
-    fail "Scenario 6: only $published/50 redirects returned 301 — gateway may be unhealthy"
+    echo "    DEBUG: read-service health: $(curl -s "$BASE_URL/health")"
+    fail "Scenario 6: only $published/50 redirects returned 301 — stack may be unhealthy"
     $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker
     return
   fi
@@ -545,7 +547,7 @@ scenario_6() {
   if pre_crash=$(poll_queue_depth gt 9 30); then
     pass "Scenario 6a: pre-crash queue depth = $pre_crash"
   else
-    echo "    DEBUG: gateway health: $(curl -s "$GATEWAY/health")"
+    echo "    DEBUG: read-service health: $(curl -s "$BASE_URL/health")"
     echo "    DEBUG: queue: $(curl -sf "${RABBITMQ_API}" | jq '{messages_ready,consumers,members}' 2>/dev/null)"
     fail "Scenario 6a: expected ≥10 messages before crash, got $pre_crash — aborting"
     $COMPOSE up -d --no-deps --scale analytics-worker="$WORKERS" analytics-worker

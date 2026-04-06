@@ -83,24 +83,26 @@ services:
       redis-1:
         condition: service_healthy
 
-  gateway:
+  read-service:
     build:
       context: ./services/gateway
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    command: ["./read-server"]
     environment:
       DB_HOST: ${DB_HOST:-postgres}
+      DB_REPLICA_HOST: ${DB_REPLICA_HOST:-}   # empty → falls back to primary
       DB_PORT: ${DB_PORT:-5432}
       DB_USER: ${DB_USER:-zhejian}
       DB_PASSWORD: ${DB_PASSWORD:-zhejian_secret}
       DB_NAME: ${DB_NAME:-urlshortener}
       DB_SSLMODE: ${DB_SSLMODE:-disable}
-      CACHE_HOST: ${CACHE_HOST:-redis}
-      CACHE_PORT: ${CACHE_PORT:-6379}
-      CACHE_TTL: ${CACHE_TTL:-5m}
+      DB_MAX_CONNS: ${DB_READ_MAX_CONNS:-5}
+      PORT: "8080"
       CACHE_NODES: ${CACHE_NODES:-redis-1:6379,redis-2:6379,redis-3:6379}
+      CACHE_TTL: ${CACHE_TTL:-5m}
       CACHE_OPERATION_TIMEOUT: ${CACHE_OPERATION_TIMEOUT:-150ms}
       CACHE_POOL_SIZE: ${CACHE_POOL_SIZE:-50}
       CACHE_CB_MIN_REQUESTS: ${CACHE_CB_MIN_REQUESTS:-50}
@@ -135,6 +137,67 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  write-service:
+    build:
+      context: ./services/gateway
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    command: ["./write-server"]
+    environment:
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-zhejian}
+      DB_PASSWORD: ${DB_PASSWORD:-zhejian_secret}
+      DB_NAME: ${DB_NAME:-urlshortener}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      DB_MAX_CONNS: ${DB_WRITE_MAX_CONNS:-10}
+      WRITE_PORT: "8081"
+      CACHE_NODES: ${CACHE_NODES:-redis-1:6379,redis-2:6379,redis-3:6379}
+      CACHE_TTL: ${CACHE_TTL:-5m}
+      CACHE_OPERATION_TIMEOUT: ${CACHE_OPERATION_TIMEOUT:-150ms}
+      CACHE_POOL_SIZE: ${CACHE_POOL_SIZE:-50}
+      CACHE_CB_MIN_REQUESTS: ${CACHE_CB_MIN_REQUESTS:-50}
+      CACHE_CB_FAILURE_RATE: ${CACHE_CB_FAILURE_RATE:-0.2}
+      CACHE_CB_CONSECUTIVE_FAILURES: ${CACHE_CB_CONSECUTIVE_FAILURES:-20}
+      CACHE_CB_TIMEOUT: ${CACHE_CB_TIMEOUT:-30s}
+      RATE_LIMITER_ADDR: ""
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      AMQP_URL: ""
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+      redis-3:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      read-service:
+        condition: service_healthy
+      write-service:
+        condition: service_healthy
 
   # RabbitMQ - Message broker
   rabbitmq-1:
@@ -195,7 +258,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      gateway:
+      read-service:
+        condition: service_healthy
+      write-service:
         condition: service_healthy
 
   grafana:

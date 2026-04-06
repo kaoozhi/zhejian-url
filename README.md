@@ -6,12 +6,13 @@
 
 # Zhejian URL Shortener
 
-A production-grade URL shortener that implements distributed systems patterns — consistent hashing, circuit breaking, competing consumers, and chaos-tested resilience — on a single host. The observability stack (Prometheus, Jaeger, structured logging) makes the constraints visible: some patterns demonstrate routing correctness (hash ring) or fault tolerance (chaos scenarios), while others show measurable gains only when components run on separate machines.
+A URL shortener with a CQRS service split, distributed caching, async analytics pipeline, and automated chaos testing — built in Go and Rust with full observability. The architecture is designed for horizontal scaling: stateless read/write services behind nginx, a Redis consistent hash ring, competing consumers on RabbitMQ quorum queues, and circuit breakers on every external dependency. Every resilience claim is verified under fault injection.
 
-**Key results:**
-- **6 automated chaos scenarios** validating rate limiter fail-open, Redis fallback, RabbitMQ recovery, and quorum queue durability under node failure
-- 3-node Redis consistent hash ring: even key distribution across nodes confirmed in Prometheus; single-machine limits documented
-- Full observability stack enables bottleneck identification across cache, DB, and message broker layers — used to confirm a null result (DB split) and validate a positive one (competing consumers)
+**What this project demonstrates:**
+- **Distributed systems design** — CQRS read/write split with nginx method-based routing, consistent hash ring (SHA-256, 150 vnodes), singleflight + circuit breaker + negative caching to prevent DB stampedes
+- **Resilience engineering** — 6 automated chaos scenarios (Toxiproxy) verify fail-open rate limiting, cache fallback to DB, AMQP auto-reconnect, and quorum queue durability under node failure
+- **Data-driven decisions** — load testing showed the DB pool was never the bottleneck (Redis absorbs ~99% of reads), so the DB pool split was reverted. The read/write *service* split addresses the real scaling axis: reads dominate traffic and can scale independently with their own cache, rate limiter, and replica DB pool — while writes stay on a single primary with no rate limiter overhead
+- **Polyglot services** — Go (Gin, pgx, AMQP, OTel) for the API layer; Rust (tonic, tokio) for a gRPC rate limiter with atomic Lua token bucket; full CI pipeline with chaos tests in GitHub Actions
 
 ---
 
@@ -21,24 +22,39 @@ A production-grade URL shortener that implements distributed systems patterns �
 Client
   │
   ▼
-Gateway (Go/Gin, :8080)
+nginx (:80)  — routes by HTTP method
+  ├── GET /*           ──► read-service (:8080)
+  └── POST/DELETE/*    ──► write-service (:8081)
+
+
+read-service (Go/Gin)
   ├── OTel middleware → Jaeger (:16686)
   ├── Metrics middleware → Prometheus (:9090)
   ├── Rate-limit middleware
   │     └── gRPC (100ms timeout, fail-open) → Rust rate-limiter (:50051)
   │                                                └── Redis token bucket
   │
-  ├── GET /:code  ──► CachedURLRepository
+  ├── GET /:code  ──► CachedURLRepository ──► 301 redirect
   │                       ├── Redis hash ring (3 nodes, SHA-256, 150 vnodes)
   │                       │     circuit breaker + singleflight + negative cache
-  │                       └── PostgreSQL (pgxpool, fallback on CB open)
-  │
-  ├── POST /api/v1/shorten ──► URLRepository → PostgreSQL
-  │                                └── fire-and-forget Publish(ClickEvent)
-  │                                        └── RabbitMQ → analytics-worker
-  │                                                            └── batch flush → PostgreSQL
+  │                       └── PostgreSQL replica pool (falls back to primary)
+  │                    └── fire-and-forget Publish(ClickEvent)
+  │                            └── RabbitMQ → analytics-worker(s)
+  │                                               └── batch flush → PostgreSQL
   │
   └── GET /health  (amqp_connected, cache_cb, rate_limiter_cb states)
+
+
+write-service (Go/Gin)
+  ├── OTel middleware → Jaeger (:16686)
+  ├── Metrics middleware → Prometheus (:9090)
+  │
+  ├── POST /api/v1/shorten ──► URLRepository → PostgreSQL primary pool
+  │                                └── cache-aside write → Redis hash ring
+  ├── DELETE /api/v1/urls/:code ──► URLRepository → PostgreSQL primary pool
+  │                                    └── cache invalidation → Redis hash ring
+  │
+  └── GET /health
 ```
 
 ---
@@ -47,13 +63,13 @@ Gateway (Go/Gin, :8080)
 
 | Layer | Technology | Notes |
 |---|---|---|
-| API Gateway | Go 1.23, Gin | Middleware chain: tracing → logging → metrics → rate-limit |
+| API Gateway | Go 1.25, Gin, nginx | read-service (GET redirects, rate-limit, cache, AMQP publish) and write-service (POST/DELETE, no rate-limit); nginx routes by HTTP method |
 | Rate Limiter | Rust, tonic (gRPC), tokio | Token bucket via atomic Lua script; single Redis round-trip |
 | Cache | Redis 8 (3-node hash ring) | SHA-256 consistent hashing, 150 vnodes/node, circuit breaker |
-| Database | PostgreSQL 16, pgx/v5 pool | pgxpool MaxConns=10; read path ~99% served from cache |
-| Message broker | RabbitMQ 4, durable queue | Fire-and-forget from gateway isolates redirect latency from analytics; worker batch-flushes 100 events or 5s ticker |
-| Analytics Worker | Go 1.23 | Separate module; on DB error, process exits without ack — `restart: on-failure` in Compose requeues messages automatically, preserving at-least-once delivery without explicit nack logic |
-| Observability | OpenTelemetry SDK, Jaeger, Prometheus | Trace IDs injected into slog fields; cache_node labels on metrics |
+| Database | PostgreSQL 16, pgx/v5 pool | Separate pools per service: read (MaxConns=5), write (MaxConns=10); read path ~99% served from cache |
+| Message broker | RabbitMQ 4, quorum queue | Fire-and-forget from read-service isolates redirect latency from analytics; worker batch-flushes 100 events or 5s ticker |
+| Analytics Worker | Go 1.25 | Separate module; on DB error, process exits without ack — `restart: on-failure` in Compose requeues messages automatically, preserving at-least-once delivery without explicit nack logic |
+| Observability | OpenTelemetry SDK, Jaeger, Prometheus, Grafana | Trace IDs injected into slog fields; cache_node labels on metrics; Grafana dashboards for analytics pipeline and cache ring |
 | Chaos testing | Toxiproxy, bash scenarios | 6 automated fault injection scenarios; chaos overlay via `docker-compose.chaos.yml` |
 | Load testing | k6 | Baseline / spike / endurance / throughput tests; web dashboard |
 | CI/CD | GitHub Actions | Go lint+test, Rust clippy+test, prod build smoke test, chaos CI |
@@ -69,17 +85,17 @@ cd zhejian-url
 docker compose up --build -d
 
 # Verify everything is up
-curl http://localhost:8080/health
+curl http://localhost/health
 # {"status":"ok","amqp_connected":true,"cache_cb":"closed","rate_limiter_cb":"closed"}
 
 # Create a short URL
-curl -s -X POST http://localhost:8080/api/v1/shorten \
+curl -s -X POST http://localhost/api/v1/shorten \
   -H 'Content-Type: application/json' \
   -d '{"url":"https://example.com"}' | jq .
-# {"short_url":"http://localhost:8080/AbCd3F","short_code":"AbCd3F"}
+# {"short_url":"http://localhost/AbCd3F","short_code":"AbCd3F"}
 
 # Follow the redirect
-curl -v http://localhost:8080/AbCd3F
+curl -v http://localhost/AbCd3F
 # HTTP/1.1 301  Location: https://example.com
 ```
 
@@ -89,6 +105,7 @@ curl -v http://localhost:8080/AbCd3F
 |---|---|
 | Jaeger (distributed traces) | http://localhost:16686 |
 | Prometheus (metrics) | http://localhost:9090 |
+| Grafana (dashboards) | http://localhost:3000 |
 | RabbitMQ management | http://localhost:15672 (guest/guest) |
 
 ---
@@ -112,7 +129,7 @@ Resilience properties written in code but never exercised under failure are clai
 
 ```bash
 # Run all chaos scenarios
-./scripts/chaos-test.sh prod --cluster --workers 3 # activation RabbitMQ cluster and 3 analytic workers
+./scripts/chaos-test.sh prod --cluster --workers 3 # activate RabbitMQ cluster and 3 analytics workers
 
 # Run a specific scenario
 ./scripts/chaos-test.sh --scenario 2
@@ -122,7 +139,7 @@ Resilience properties written in code but never exercised under failure are clai
 
 ### 2. Rust Rate Limiter — Distributed Token Bucket
 
-In-process rate limiting breaks the moment you run more than one gateway instance — each process has its own counter, and the limits are never shared. Moving the state to Redis solves the coordination problem, but a naïve read-modify-write leaves a TOCTOU race. A Lua script eliminates both.
+In-process rate limiting breaks the moment you run more than one read-service instance — each process has its own counter, and the limits are never shared. Moving the state to Redis solves the coordination problem, but a naïve read-modify-write leaves a TOCTOU race. A Lua script eliminates both.
 
 **The algorithm** — the token bucket Lua script executes atomically on Redis: `HMGET` reads current tokens and last-refill timestamp, computes elapsed time to refill, deducts one token if available, writes back with `HMSET`, sets a 2-minute expiry. All in a single round-trip.
 
@@ -132,9 +149,9 @@ local new_tokens = math.min(burst, tokens + elapsed * rate / 60000)
 -- allowed = new_tokens >= 1; remaining = floor(new_tokens - 1)
 ```
 
-**Why Rust** — the rate limiter sits on the hot path of every redirect. Rust's async runtime (tokio) and zero-cost abstractions avoid GC pauses that would add unpredictable tail latency. `redis::aio::ConnectionManager` gives a multiplexed, auto-reconnecting connection; `tonic` provides the gRPC server. The Go gateway uses hand-written gRPC stubs so `protoc` is not required at runtime.
+**Why Rust** — the rate limiter sits on the hot path of every redirect. Rust's async runtime (tokio) and zero-cost abstractions avoid GC pauses that would add unpredictable tail latency. `redis::aio::ConnectionManager` gives a multiplexed, auto-reconnecting connection; `tonic` provides the gRPC server. The Go read-service uses hand-written gRPC stubs so `protoc` is not required at runtime.
 
-**Fail-open design** — the gateway calls the rate limiter with a 100ms gRPC timeout. On timeout or error, the circuit breaker opens and all requests proceed. Rate enforcement is a best-effort availability improvement, not a hard gate that can take the service down.
+**Fail-open design** — read-service calls the rate limiter with a 100ms gRPC timeout. On timeout or error, the circuit breaker opens and all requests proceed. Rate enforcement is a best-effort availability improvement, not a hard gate that can take the service down.
 
 **Verified by chaos** — scenario 1 in `chaos-test.sh` injects 500ms latency on the gRPC link, confirms the circuit breaker opens, verifies all requests still return 200 (fail-open), then confirms 429 enforcement resumes after recovery.
 
@@ -248,23 +265,38 @@ Defaults: 50-request window, 20% failure rate, 20 consecutive failures. All tuna
 
 Negative caching stores a `__NOT_FOUND__` sentinel for missing keys (1-minute TTL), preventing repeated DB lookups when a short code does not exist.
 
-Cache calls also use a 50ms `context.WithTimeout` (`CACHE_OPERATION_TIMEOUT`) independent of TCP timeouts — ensures the gateway never blocks on a slow Redis node longer than one request's budget.
+Cache calls also use a 50ms `context.WithTimeout` (`CACHE_OPERATION_TIMEOUT`) independent of TCP timeouts — ensures the read-service never blocks on a slow Redis node longer than one request's budget.
 
 **Key files:**
 - [`services/gateway/internal/repository/cached_url_repository.go`](services/gateway/internal/repository/cached_url_repository.go) — all four patterns implemented here
 
 ---
 
-### 6. Measuring Before Optimizing: DB Read-Write Split
+### 6. CQRS Service Split — Scaling Reads Independently
 
-The hypothesis was straightforward: if DB pool contention is the throughput bottleneck, splitting reads to a replica pool should help. The data said otherwise.
+URL shortening is read-heavy: every short URL is created once but redirected many times. A monolithic gateway forces both paths to share resources, deploy together, and scale as a unit. The read/write split separates them so each can be sized, tuned, and scaled for its actual workload.
+
+```
+nginx (:80)
+  ├── GET  → read-service  (rate limiter, cache ring, replica DB pool, AMQP publisher)
+  └── POST/DELETE → write-service  (primary DB pool, cache invalidation, no rate limiter)
+```
+
+**Why split at the service level, not just the DB pool level?** A DB pool split was implemented and load tested first. The data showed it didn't help:
 
 | | p95 | req/s |
 |---|---|---|
 | Before (single pool) | 207ms | 5,575 |
-| After (split pools) | 261ms | 4,481 |
+| After (split DB pools) | 261ms | 4,481 |
 
-Redis absorbs ~99% of redirect reads; the DB pool was nearly idle during load tests. Running two PostgreSQL containers on the same host consumed enough CPU and memory to make the "after" configuration measurably worse. The implementation was reverted. The finding is the point: measure before optimizing, and treat a null result as information, not failure.
+Redis absorbs ~99% of redirect reads — the DB pool was never the bottleneck. Running two PostgreSQL containers on the same host only added CPU contention. The pool split was reverted.
+
+The *service* split addresses the real scaling axis: read-service handles the high-volume redirect path with its own cache, rate limiter, and replica-capable DB pool. Write-service handles low-volume creates with a primary DB pool and no rate limiter overhead. Each is stateless and independently deployable — in production, you'd run N read-service instances behind a load balancer while write-service stays at 1-2 instances.
+
+**Key files:**
+- [`services/gateway/cmd/read-server/`](services/gateway/cmd/read-server/) — read-service entry point
+- [`services/gateway/cmd/write-server/`](services/gateway/cmd/write-server/) — write-service entry point
+- [`infrastructure/nginx/nginx.conf`](infrastructure/nginx/nginx.conf) — method-based routing
 
 ---
 
@@ -279,14 +311,22 @@ The k6 test suite covers four scenarios, each measuring a different property:
 | Throughput ceiling | 1000 | Raw req/s ceiling with rate limiter disabled |
 | Endurance | 100, 12min | Memory leaks, connection pool exhaustion, queue growth over time |
 
+### A note on single-machine numbers
+
+Every service in this project — read-service, write-service, nginx, Redis (3 nodes), PostgreSQL, RabbitMQ, rate limiter, k6 — runs on the same WSL2/Mac host and shares the same CPU and memory. Under these conditions, **the throughput ceiling (~8,100 req/s) is a property of the host, not of the architecture**. Adding nodes or splitting services on the same machine redistributes CPU contention without removing it, which is why the DB read-write split showed no gain and the hash ring showed no throughput increase.
+
+The load tests serve two purposes here:
+- **Correctness validation** — confirming that the architecture behaves correctly under load (zero errors, circuit breakers trip and recover as expected, competing consumers drain the queue)
+- **Relative comparison** — measuring the same configuration change twice on the same hardware (e.g., 1 worker vs. 3 workers, single-node vs. hash ring) to isolate the effect of that change
+
+What matters most is that the architecture is designed to scale horizontally: read-service and write-service are stateless and independently deployable, the Redis ring handles node additions with minimal key remapping, and competing consumers scale with `--scale analytics-worker=N`. On separate machines, each of these patterns would show real throughput gains. On a single host, the load tests confirm the patterns work correctly — not how fast they can go.
+
 ### Results (single-machine baseline)
 
 | Test | p95 | req/s | Error rate |
 |---|---|---|---|
 | Baseline (rate limiter active) | ~200ms | — | 0% |
 | Throughput ceiling | 193ms | ~8,100 | 0% |
-
-> **Single-machine context:** All components — gateway, Redis (3 nodes), PostgreSQL, RabbitMQ, rate limiter — run on the same WSL2/Mac host and share CPU and memory. The 8,100 req/s ceiling was measured with the rate limiter disabled to isolate the cache and DB path. These numbers are useful for comparing configurations on the same hardware (e.g., single-node vs. hash ring, one worker vs. three) and for validating SLO thresholds. They are not absolute throughput claims — a real distributed deployment would look different.
 
 ```bash
 make load-baseline          # 100 VUs, 9min, rate limiter active
@@ -305,8 +345,9 @@ RATE_LIMITER_ADDR="" make load-throughput-single  # single node (for comparison)
 ```
 zhejian-url/
 ├── services/
-│   ├── gateway/               # Go API Gateway (main service)
-│   │   ├── cmd/server/        # Entry point
+│   ├── gateway/               # Go services (shared module)
+│   │   ├── cmd/read-server/   # read-service entry point (GET redirects)
+│   │   ├── cmd/write-server/  # write-service entry point (POST/DELETE)
 │   │   └── internal/
 │   │       ├── api/           # HTTP handlers + health endpoint
 │   │       ├── cache/         # ClientProvider interface + HashRing
@@ -331,13 +372,16 @@ zhejian-url/
 ├── scripts/
 │   └── chaos-test.sh          # Toxiproxy fault injection scenarios
 ├── observability/
-│   └── prometheus/            # Prometheus scrape configs
+│   ├── prometheus/            # Prometheus scrape configs + alert rules
+│   └── grafana/               # Dashboards + provisioning (analytics pipeline, cache ring)
 ├── docs/
 │   ├── BUILD_PHASES.md        # Build history and per-phase findings
 │   └── plans/                 # Per-phase implementation plans
-├── docker-compose.yml         # Dev stack (3 Redis nodes, RabbitMQ, Jaeger)
-├── docker-compose.prod.yml    # Production stack
-├── docker-compose.chaos.yml   # Chaos overlay (adds Toxiproxy)
+├── infrastructure/nginx/      # nginx routing config (POST/DELETE → write, GET → read)
+├── docker-compose.yml                  # Dev stack (read-service, write-service, nginx, Redis, RabbitMQ, Jaeger)
+├── docker-compose.prod.yml             # Production stack
+├── docker-compose.chaos.yml            # Chaos overlay (adds Toxiproxy)
+├── docker-compose.rabbitmq-cluster.yml # 3-node RabbitMQ cluster overlay
 └── Makefile                   # load-baseline, load-throughput-*, load-hotkey-*
 ```
 
@@ -372,12 +416,15 @@ All configuration is via environment variables. Key toggles:
 | Variable | Default | Effect |
 |---|---|---|
 | `RATE_LIMITER_ADDR` | `rate-limiter:50051` | Set to `""` to disable rate limiting |
-| `AMQP_URL` | `amqp://guest:guest@rabbitmq:5672/` | Set to `""` to disable analytics |
+| `AMQP_URL` | `amqp://guest:guest@rabbitmq-1:5672/` | Set to `""` to disable analytics (disabled on write-service) |
 | `CACHE_NODES` | `redis-1:6379,redis-2:6379,redis-3:6379` | Comma-separated Redis nodes |
 | `CACHE_OPERATION_TIMEOUT` | `150ms` | Per-cache-call context deadline |
 | `CACHE_CB_MIN_REQUESTS` | `50` | CB window size before rate check |
 | `CACHE_CB_FAILURE_RATE` | `0.2` | CB trip threshold (0.0–1.0) |
-| `DB_REPLICA_URL` | `""` | Read replica connection; reverted after load testing showed DB was not the bottleneck |
+| `DB_REPLICA_HOST` | `""` | Postgres read replica hostname for read-service; falls back to primary when empty |
+| `DB_MAX_CONNS` | `5` (read), `10` (write) | pgxpool max connections per service |
+| `READ_PORT` | `8080` | read-service listen port |
+| `WRITE_PORT` | `8081` | write-service listen port |
 
 ---
 

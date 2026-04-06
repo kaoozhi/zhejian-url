@@ -13,6 +13,8 @@ import (
 // Config holds all application configuration
 type Config struct {
 	Server      ServerConfig
+	ReadServer  ServerConfig
+	WriteServer ServerConfig
 	Database    DatabaseConfig
 	App         AppConfig
 	Cache       CacheConfig
@@ -29,16 +31,14 @@ type ServerConfig struct {
 
 // DatabaseConfig holds database connection configuration
 type DatabaseConfig struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	DBName   string
-	SSLMode  string
-	// MaxConns    int32
-	// MinConns    int32
-	// MaxConnLife time.Duration
-	// MaxConnIdle time.Duration
+	Host        string
+	ReplicaHost string // DB_REPLICA_HOST — read-only replica; falls back to Host when empty
+	Port        string
+	User        string
+	Password    string
+	DBName      string
+	SSLMode     string
+	MaxConns    int32
 }
 
 // Redis Caching Layer configuration
@@ -91,17 +91,21 @@ func Load() *Config {
 			// ReadTimeout:  10 * time.Second,
 			// WriteTimeout: 10 * time.Second,
 		},
+		ReadServer: ServerConfig{
+			Port: getEnv("READ_PORT", "8080"),
+		},
+		WriteServer: ServerConfig{
+			Port: getEnv("WRITE_PORT", "8081"),
+		},
 		Database: DatabaseConfig{
-			Host:     getEnv("DB_HOST", "localhost"),
-			Port:     getEnv("DB_PORT", "5432"),
-			User:     getEnv("DB_USER", "zhejian"),
-			Password: getEnv("DB_PASSWORD", "zhejian_secret"),
-			DBName:   getEnv("DB_NAME", "urlshortener"),
-			SSLMode:  getEnv("DB_SSLMODE", "disable"),
-			// MaxConns:    10,
-			// MinConns:    2,
-			// MaxConnLife: time.Hour,
-			// MaxConnIdle: 30 * time.Minute,
+			Host:        getEnv("DB_HOST", "localhost"),
+			ReplicaHost: getEnv("DB_REPLICA_HOST", ""),
+			Port:        getEnv("DB_PORT", "5432"),
+			User:        getEnv("DB_USER", "zhejian"),
+			Password:    getEnv("DB_PASSWORD", "zhejian_secret"),
+			DBName:      getEnv("DB_NAME", "urlshortener"),
+			SSLMode:     getEnv("DB_SSLMODE", "disable"),
+			MaxConns:    int32(getEnvInt("DB_MAX_CONNS", 10)),
 		},
 		Cache: CacheConfig{
 			Host:             getEnv("CACHE_HOST", "localhost"),
@@ -139,13 +143,12 @@ func Load() *Config {
 	}
 }
 
-type ConnectionInterface interface {
-	ConnectionString() string
-}
-
 // ConnectionString returns the PostgreSQL connection string
-func (d *DatabaseConfig) ConnectionString() string {
-	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, d.Host, d.Port, d.DBName, d.SSLMode)
+func (d *DatabaseConfig) ConnectionString(host string) string {
+	if host == "" {
+		host = d.Host
+	}
+	connectionString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", d.User, d.Password, host, d.Port, d.DBName, d.SSLMode)
 	return connectionString
 }
 

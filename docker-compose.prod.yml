@@ -78,8 +78,10 @@ services:
       redis-1:
         condition: service_healthy
 
-  gateway:
-    build: ./services/gateway
+  read-service:
+    build:
+      context: ./services/gateway
+    command: ["./read-server"]
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
@@ -87,8 +89,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       DB_SSLMODE: ${DB_SSLMODE}
-      CACHE_HOST: ${CACHE_HOST:-redis-1}
-      CACHE_PORT: ${CACHE_PORT:-6379}
+      DB_REPLICA_HOST: ${DB_REPLICA_HOST:-}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-5}
       CACHE_TTL: ${CACHE_TTL:-5m}
       CACHE_NODES: ${CACHE_NODES:-redis-1:6379,redis-2:6379,redis-3:6379}
       CACHE_OPERATION_TIMEOUT: ${CACHE_OPERATION_TIMEOUT:-150ms}
@@ -101,8 +103,9 @@ services:
       RATE_LIMITER_TIMEOUT: ${RATE_LIMITER_TIMEOUT:-100ms}
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
       AMQP_URL: ${AMQP_URL-amqp://guest:guest@rabbitmq-1:5672/}
-    ports:
-      - "8080:8080"
+      READ_PORT: "8080"
+    expose:
+      - "8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,6 +128,63 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  write-service:
+    build:
+      context: ./services/gateway
+    command: ["./write-server"]
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      DB_SSLMODE: ${DB_SSLMODE}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      CACHE_TTL: ${CACHE_TTL:-5m}
+      CACHE_NODES: ${CACHE_NODES:-redis-1:6379,redis-2:6379,redis-3:6379}
+      CACHE_OPERATION_TIMEOUT: ${CACHE_OPERATION_TIMEOUT:-150ms}
+      CACHE_POOL_SIZE: ${CACHE_POOL_SIZE:-50}
+      CACHE_CB_MIN_REQUESTS: ${CACHE_CB_MIN_REQUESTS:-50}
+      CACHE_CB_FAILURE_RATE: ${CACHE_CB_FAILURE_RATE:-0.2}
+      CACHE_CB_CONSECUTIVE_FAILURES: ${CACHE_CB_CONSECUTIVE_FAILURES:-20}
+      CACHE_CB_TIMEOUT: ${CACHE_CB_TIMEOUT:-30s}
+      RATE_LIMITER_ADDR: ""
+      AMQP_URL: ""
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      WRITE_PORT: "8081"
+    expose:
+      - "8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+      redis-3:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      read-service:
+        condition: service_healthy
+      write-service:
+        condition: service_healthy
 
   # RabbitMQ - Message broker
   rabbitmq-1:
@@ -179,7 +239,9 @@ services:
       - ./observability/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml
       - prometheus_data:/prometheus
     depends_on:
-      gateway:
+      read-service:
+        condition: service_healthy
+      write-service:
         condition: service_healthy
 
   grafana:

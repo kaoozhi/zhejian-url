@@ -75,6 +75,31 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/:code", h.redirect)
 }
 
+func (h *Handler) RegisterWriteRoutes(r *gin.Engine) {
+	r.GET("/health", h.healthCheck)
+
+	// API v1 routes - grouped for versioning
+	v1 := r.Group("/api/v1")
+	{
+		v1.POST("/shorten", h.createShortURL) // Create short URL
+		v1.DELETE("/urls/:code", h.deleteURL) // Delete URL
+	}
+}
+
+func (h *Handler) RegisterReadRoutes(r *gin.Engine) {
+	// Health check endpoint
+	r.GET("/health", h.healthCheck)
+
+	// API v1 routes - grouped for versioning
+	v1 := r.Group("/api/v1")
+	{
+		v1.GET("/urls/:code", h.getURL) // Get URL metadata
+	}
+
+	// Redirect route (public) - must be last to avoid conflicts
+	r.GET("/:code", h.redirect)
+}
+
 // healthCheck handles GET /health
 // Returns the health status of the service and all dependencies.
 // Response codes:

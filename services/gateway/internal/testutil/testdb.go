@@ -54,7 +54,7 @@ func SetupTestDB(ctx context.Context) (*TestDB, error) {
 		return nil, err
 	}
 
-	pool, err := infra.NewPostgresPool(ctx, connString)
+	pool, err := infra.NewPostgresPool(ctx, connString, 0)
 	if err != nil {
 		if terr := container.Terminate(ctx); terr != nil {
 			err = terr

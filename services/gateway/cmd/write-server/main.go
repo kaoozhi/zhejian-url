@@ -10,12 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/zhejian/url-shortener/gateway/internal/analytics"
 	"github.com/zhejian/url-shortener/gateway/internal/cache"
 	"github.com/zhejian/url-shortener/gateway/internal/config"
 	"github.com/zhejian/url-shortener/gateway/internal/infra"
 	"github.com/zhejian/url-shortener/gateway/internal/observability"
-	"github.com/zhejian/url-shortener/gateway/internal/ratelimit"
 	"github.com/zhejian/url-shortener/gateway/internal/server"
 )
 
@@ -28,7 +26,7 @@ func main() {
 
 	// Setup observability
 	obs, err := observability.Setup(ctx, observability.Config{
-		ServiceName:  "gateway",
+		ServiceName:  "write-service",
 		Environment:  "development",
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	})
@@ -38,9 +36,9 @@ func main() {
 	}
 	defer obs.Shutdown(ctx)
 
-	// Connect to database
-	DBconnectionString := cfg.Database.ConnectionString()
-	db, err := infra.NewPostgresPool(ctx, DBconnectionString)
+	// Connect to database — write-service always uses the primary
+	DBconnectionString := cfg.Database.ConnectionString(cfg.Database.Host)
+	db, err := infra.NewPostgresPool(ctx, DBconnectionString, cfg.Database.MaxConns)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -68,33 +66,33 @@ func main() {
 	obs.Logger.Info("Cache connected successfully")
 
 	// Setup rate limiter
-	var rateLimiter *ratelimit.Client
-	if cfg.RateLimiter.Enabled {
-		rateLimiter, err = ratelimit.NewClient(cfg.RateLimiter.Addr, cfg.RateLimiter.Timeout, obs.Logger)
-		if err != nil {
-			log.Fatalf("Failed to setup rate limiter: %v", err)
-		}
-		defer rateLimiter.Close()
-		obs.Logger.Info("Rate limiter enabled")
-	}
+	// var rateLimiter *ratelimit.Client
+	// if cfg.RateLimiter.Enabled {
+	// 	rateLimiter, err = ratelimit.NewClient(cfg.RateLimiter.Addr, cfg.RateLimiter.Timeout, obs.Logger)
+	// 	if err != nil {
+	// 		log.Fatalf("Failed to setup rate limiter: %v", err)
+	// 	}
+	// 	defer rateLimiter.Close()
+	// 	obs.Logger.Info("Rate limiter enabled")
+	// }
 
 	// Setup analytics publisher (optional — disabled when AMQP_URL is empty)
-	var pub *analytics.Publisher
-	if cfg.Analytics.Enabled {
-		pub, err = analytics.NewPublisher(cfg.Analytics.AMQPURL, obs.Logger)
-		if err != nil {
-			log.Fatalf("Failed to connect to RabbitMQ: %v", err)
-		}
-		defer pub.Close()
-		obs.Logger.Info("Analytics publisher enabled")
-	}
+	// var pub *analytics.Publisher
+	// if cfg.Analytics.Enabled {
+	// 	pub, err = analytics.NewPublisher(cfg.Analytics.AMQPURL, obs.Logger)
+	// 	if err != nil {
+	// 		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+	// 	}
+	// 	defer pub.Close()
+	// 	obs.Logger.Info("Analytics publisher enabled")
+	// }
 
-	srv := server.NewServer(cfg, db, cacheProvider, rateLimiter, obs, pub)
+	srv := server.NewWriteServer(cfg, db, cacheProvider, nil, obs, nil)
 
-	// Start server in a goroutine
+	// Start write server in a goroutine
 	go func() {
-		obs.Logger.Info("Server starting",
-			slog.String("port", cfg.Server.Port),
+		obs.Logger.Info("Write Server starting",
+			slog.String("port", cfg.WriteServer.Port),
 			slog.String("base_url", cfg.App.BaseURL))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed to start: %v", err)
